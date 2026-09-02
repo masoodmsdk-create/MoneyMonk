@@ -592,6 +592,15 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   @override
   Widget build(BuildContext context) {
     final screens = <Widget>[
+      HomeSummaryScreen(
+        moneyEntries: _moneyEntries,
+        loanEntries: _loanEntries,
+        selectedMonth: _selectedMonth,
+        monthlyIncome: _getMoneyTotal(MoneyEntryType.income),
+        monthlyExpense: _getMoneyTotal(MoneyEntryType.expense),
+        onMoneyTap: () => setState(() => _selectedIndex = 1),
+        onLoansTap: () => setState(() => _selectedIndex = 2),
+      ),
       MoneyScreen(
         entries: _moneyEntries,
         selectedMonth: _selectedMonth,
@@ -640,6 +649,11 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         },
         destinations: const [
           NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.account_balance_wallet_outlined),
             label: 'Money',
           ),
@@ -651,6 +665,104 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
     );
   }
+}
+
+class HomeSummaryScreen extends StatelessWidget {
+  const HomeSummaryScreen({
+    super.key,
+    required this.moneyEntries,
+    required this.loanEntries,
+    required this.selectedMonth,
+    required this.monthlyIncome,
+    required this.monthlyExpense,
+    required this.onMoneyTap,
+    required this.onLoansTap,
+  });
+
+  final List<MoneyEntry> moneyEntries;
+  final List<LoanEntry> loanEntries;
+  final DateTime selectedMonth;
+  final int monthlyIncome;
+  final int monthlyExpense;
+  final VoidCallback onMoneyTap;
+  final VoidCallback onLoansTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final balance = monthlyIncome - monthlyExpense;
+    final outstanding = loanEntries.fold<int>(0, (sum, loan) => sum + loan.outstandingAmountInPaise);
+    final monthlyEmi = loanEntries.fold<int>(0, (sum, loan) => sum + loan.emiInPaise + loan.extraEmiInPaise);
+    final highestRateLoan = loanEntries.isEmpty ? null : loanEntries.reduce(
+      (a, b) => a.interestRatePerAnnum >= b.interestRatePerAnnum ? a : b,
+    );
+
+    return SingleChildScrollView(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const SizedBox(height: 8),
+        const Text('Home', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
+        const SizedBox(height: 6),
+        Text(DateFormat('MMMM yyyy').format(selectedMonth), style: const TextStyle(color: moneyMonkSecondaryText)),
+        const SizedBox(height: 20),
+        InkWell(
+          onTap: onMoneyTap,
+          borderRadius: BorderRadius.circular(18),
+          child: Card(
+            color: moneyMonkNavy,
+            child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Monthly balance', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              const SizedBox(height: 8),
+              Text(_formatCurrency(balance), style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w700)),
+            ]),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Row(children: [
+          Expanded(child: _SummaryTile(label: 'Income', value: _formatCurrency(monthlyIncome), color: moneyMonkIncome, onTap: onMoneyTap)),
+          const SizedBox(width: 12),
+          Expanded(child: _SummaryTile(label: 'Expense', value: _formatCurrency(monthlyExpense), color: moneyMonkExpense, onTap: onMoneyTap)),
+        ]),
+        const SizedBox(height: 24),
+        const Text('Loans at a glance', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText)),
+        const SizedBox(height: 10),
+        InkWell(
+          onTap: onLoansTap,
+          borderRadius: BorderRadius.circular(18),
+          child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+          _SummaryLine('Active loans', '${loanEntries.length}'),
+          _SummaryLine('Outstanding', _formatCurrency(outstanding)),
+          _SummaryLine('Monthly payments', _formatCurrency(monthlyEmi)),
+          if (highestRateLoan != null) _SummaryLine('Highest ROI', '${highestRateLoan.name} (${highestRateLoan.interestRatePerAnnum.toStringAsFixed(2)}%)'),
+          ]))),
+        ),
+        const SizedBox(height: 14),
+        Text('${moneyEntries.length} money entries saved', style: const TextStyle(color: moneyMonkSecondaryText)),
+      ]),
+    );
+  }
+
+  static String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: paise % 100 == 0 ? 0 : 2).format(paise / 100);
+}
+
+class _SummaryTile extends StatelessWidget {
+  const _SummaryTile({required this.label, required this.value, required this.color, required this.onTap});
+  final String label;
+  final String value;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(onTap: onTap, borderRadius: BorderRadius.circular(18), child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: const TextStyle(color: moneyMonkSecondaryText)), const SizedBox(height: 8), Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: color))]))));
+}
+
+class _SummaryLine extends StatelessWidget {
+  const _SummaryLine(this.label, this.value);
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) => Padding(padding: const EdgeInsets.symmetric(vertical: 7), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(label, style: const TextStyle(color: moneyMonkSecondaryText)), Flexible(child: Text(value, textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)))]));
 }
 
 class MoneyScreen extends StatelessWidget {
