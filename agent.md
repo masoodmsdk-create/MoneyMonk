@@ -1515,14 +1515,45 @@ MoneyMonk currently supports a simple local account flow:
 
 Local account storage is suitable for the current single-device MVP only. It is not a substitute for production-grade authentication, password recovery, or cross-device synchronization. When multi-device or production multi-user access is required, migrate to Firebase Authentication and user-owned Firestore documents with security rules.
 
-Home is a summary page, not a second detailed dashboard. It may show monthly balance, income, expenses, loan count, outstanding principal, total EMI including extra EMI, and a concise factual priority. Summary sections must drill down to the detailed Money or Loans page when tapped.
+Home is a summary page, not a second detailed dashboard. It shows monthly balance, income, expenses, loan count, outstanding principal, total EMI including extra EMI, and a concise factual priority. Summary cards drill down to the detailed Money or Loans page when tapped.
 
-The in-app advisor may answer questions using the user's visible MoneyMonk context: income, expenses, recurring entries, balance, loans, EMI, extra EMI, ROI, amortization, and forecast results. Deterministic local answers should remain available without a network. Gemini integration is optional and must:
+43. Google Gemini Multi-Tier AI Advisor Specification
 
-- Send only the minimum relevant summarized context.
-- Never hard-code or persist an API key in source or user data.
-- Clearly tell users when a Gemini key/network is required.
-- Avoid claiming to provide regulated financial advice.
-- Recommend checking loan prepayment charges before suggesting extra payments.
+MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gemini-2.0-flash`). The AI system is designed with dual-tier support to give users complete flexibility:
 
-Do not assume a user's ordinary Gemini chat subscription can be accessed automatically. Direct Gemini API access requires an API key or a properly configured secure backend. Never expose a provider secret in a production Flutter client.
+### A. Free Tier (Default - Google AI Studio)
+- **Model**: `gemini-2.0-flash`
+- **Quota**: 15 Requests Per Minute (RPM), 1,500 Requests Per Day (RPD)
+- **Cost**: **$0.00 (100% Free forever)** without requiring a credit card or billing account.
+- **Key Generation**: Free API keys are created via Google AI Studio (`aistudio.google.com/app/apikey`).
+- **Key Storage**: Keys and tier preferences are stored locally in the user's browser/device session via `SharedPreferences` under the user's namespace (`moneymonk_gemini_key_$username`, `moneymonk_ai_tier_$username`).
+
+### B. Paid / Google Cloud Tier
+- **Target Audience**: Users with billing-enabled Google Cloud / Vertex AI / Google AI Studio paid accounts or enterprise organizations.
+- **Model**: `gemini-2.0-flash` (or pro models) with dedicated quotas, enterprise SLAs, and strict zero-logging data privacy guarantees.
+- **Account Linking**: Allows entering a private Google Cloud API key and connecting a Google account identifier (`moneymonk_google_account_$username`).
+
+### C. Advisor Capabilities & Guardrails
+- **Context Injection**: Includes strictly summarized monthly income, expenses breakdown, net balance, savings rate, and itemized active loans (outstanding amount, EMI, extra EMI, annual interest rate %).
+- **Prompt Presets**:
+  - 📊 **Financial Health Audit**: Holistic assessment of debt-to-income and cash flow stability.
+  - 🚀 **Debt Payoff Strategy**: Pragmatic comparison of debt avalanche (highest ROI first) and debt snowball.
+  - 💡 **Expense Trimming**: Realistic identification of surplus opportunities without extreme austerity.
+  - 🎯 **50/30/20 Budgeting**: Tailored budget allocation accounting for existing loan commitments.
+- **Regulatory Guardrails**: The advisor explicitly avoids claiming to be a registered fiduciary/financial advisor, maintains factual grounding, and reminds users to verify prepayment terms before making lump-sum loan payments.
+- **Error Handling**: Gracefully surfaces 429 rate limit notifications for free tier users and provides a direct "Setup Key" shortcut when no key is configured.
+
+44. Hosting, Build, and Git Deployment Contract
+
+- **Technology Stack**: Flutter (Web, iOS, Android, macOS, Linux, Windows) with Dart SDK `^3.13.1`.
+- **Web Build Command**: `flutter build web --release`
+- **Static Analysis**: `flutter analyze` must pass with zero errors and zero lint warnings before deployment.
+- **Hosting Platform**: Firebase Hosting on project `moneymonk-d5605`.
+- **Live URLs**:
+  - Primary: `https://moneymonk-d5605.web.app`
+  - Alternate: `https://moneymonk-d5605.firebaseapp.com`
+- **Git Version Control**:
+  - Remote Repository: `https://github.com/masoodmsdk-create/MoneyMonk`
+  - Default Branch: `main`
+- **Deployment Process**: Build web release -> Deploy via `firebase deploy --only hosting` -> Commit and push clean working tree to `origin/main`.
+

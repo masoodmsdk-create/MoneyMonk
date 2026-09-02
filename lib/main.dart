@@ -19,6 +19,12 @@ const Color moneyMonkExpense = Color(0xFFC2410C);
 const Color moneyMonkWarning = Color(0xFFB45309);
 const Color moneyMonkError = Color(0xFFB91C1C);
 
+// Default Free Tier Gemini API key (passed via --dart-define or fallback)
+const String defaultFreeGeminiApiKey = String.fromEnvironment(
+  'GEMINI_API_KEY',
+  defaultValue: '',
+);
+
 void main() {
   runApp(const MoneyMonkApp());
 }
@@ -1025,10 +1031,17 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
       return;
     }
 
-    final key = _savedApiKey.isNotEmpty ? _savedApiKey : _apiKeyController.text.trim();
+    final effectiveKey = _tier == AiTier.free
+        ? (_savedApiKey.isNotEmpty ? _savedApiKey : defaultFreeGeminiApiKey)
+        : _savedApiKey;
 
-    if (key.isEmpty) {
-      _showAiSettingsDialog(context, initialMessage: 'Please set up your Gemini API Key first.');
+    if (effectiveKey.isEmpty) {
+      _showAiSettingsDialog(
+        context,
+        initialMessage: _tier == AiTier.free
+            ? 'Please enter your free Google Gemini API Key to use AI insights.'
+            : 'Please enter your paid Google Cloud / Gemini API key to activate dedicated tier.',
+      );
       return;
     }
 
@@ -1075,7 +1088,7 @@ User Query: $effectiveQuestion''';
 
     try {
       final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$key'),
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$effectiveKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'contents': [
@@ -1385,7 +1398,9 @@ User Query: $effectiveQuestion''';
 
   @override
   Widget build(BuildContext context) {
-    final hasKey = _savedApiKey.isNotEmpty;
+    final hasActiveKey = _tier == AiTier.free
+        ? (_savedApiKey.isNotEmpty || defaultFreeGeminiApiKey.isNotEmpty)
+        : _savedApiKey.isNotEmpty;
 
     return Card(
       child: Padding(
@@ -1514,7 +1529,7 @@ User Query: $effectiveQuestion''';
             const SizedBox(height: 12),
 
             // AI Status & Settings Shortcut
-            if (!hasKey) ...[
+            if (!hasActiveKey) ...[
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -1526,10 +1541,12 @@ User Query: $effectiveQuestion''';
                   children: [
                     const Icon(Icons.key_outlined, color: moneyMonkWarning, size: 20),
                     const SizedBox(width: 10),
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'Set your free Google Gemini API key to activate AI insights.',
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText),
+                        _tier == AiTier.free
+                            ? 'Set your free Google Gemini API key to activate AI insights.'
+                            : 'Enter your dedicated Google Cloud / Gemini key to use Paid Tier.',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText),
                       ),
                     ),
                     TextButton(
