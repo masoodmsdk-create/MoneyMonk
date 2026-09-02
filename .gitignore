@@ -12,6 +12,10 @@
 .swiftpm/
 migrate_working_dir/
 .firebase/
+.env
+.env*
+*.key
+*.secret
 
 # IntelliJ related
 *.iml

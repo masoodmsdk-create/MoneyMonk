@@ -19,11 +19,8 @@ const Color moneyMonkExpense = Color(0xFFC2410C);
 const Color moneyMonkWarning = Color(0xFFB45309);
 const Color moneyMonkError = Color(0xFFB91C1C);
 
-// Default Free Tier Gemini API key (passed via --dart-define or fallback)
-const String defaultFreeGeminiApiKey = String.fromEnvironment(
-  'GEMINI_API_KEY',
-  defaultValue: '',
-);
+// Default Free Tier Gemini API key (injected securely via --dart-define=GEMINI_API_KEY)
+const String defaultFreeGeminiApiKey = String.fromEnvironment('GEMINI_API_KEY');
 
 void main() {
   runApp(const MoneyMonkApp());

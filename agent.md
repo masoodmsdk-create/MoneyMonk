@@ -1524,8 +1524,8 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 ### A. Free Tier (Default - Google AI Studio)
 - **Model**: `gemini-2.0-flash`
 - **Quota**: 15 Requests Per Minute (RPM), 1,500 Requests Per Day (RPD)
-- **Cost**: **$0.00 (100% Free forever)** without requiring a credit card or billing account.
-- **Key Generation**: Free API keys are created via Google AI Studio (`aistudio.google.com/app/apikey`).
+- **Cost & Strict No-Billing**: **$0.00 (100% Free forever)**. The default free tier operates strictly under non-billable AI Studio limits. If daily free quotas are reached, requests return standard rate-limit (429) notifications rather than generating charges.
+- **Default App Key**: Configured with a default free tier key so all users can experience AI advisory out of the box with zero setup.
 - **Key Storage**: Keys and tier preferences are stored locally in the user's browser/device session via `SharedPreferences` under the user's namespace (`moneymonk_gemini_key_$username`, `moneymonk_ai_tier_$username`).
 
 ### B. Paid / Google Cloud Tier
