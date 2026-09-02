@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -89,8 +90,127 @@ class MoneyMonkApp extends StatelessWidget {
     return MaterialApp(
       title: 'MoneyMonk',
       theme: theme,
-      home: const MoneyMonkHomePage(),
+      home: const LoginPage(),
       debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isSignup = false;
+  bool _isBusy = true;
+  String? _error;
+  String? _currentUser;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreSession();
+  }
+
+  Future<void> _restoreSession() async {
+    final preferences = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _currentUser = preferences.getString('moneymonk_current_user');
+      _isBusy = false;
+    });
+  }
+
+  String _hashPassword(String username, String password) {
+    return sha256.convert(utf8.encode('$username:$password')).toString();
+  }
+
+  Future<void> _submit() async {
+    final username = _usernameController.text.trim().toLowerCase();
+    final password = _passwordController.text;
+    if (username.length < 3) {
+      setState(() => _error = 'Username must be at least 3 characters.');
+      return;
+    }
+    if (password.length < 6) {
+      setState(() => _error = 'Password must be at least 6 characters.');
+      return;
+    }
+    final preferences = await SharedPreferences.getInstance();
+    final users = jsonDecode(preferences.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
+    final hash = _hashPassword(username, password);
+    if (_isSignup) {
+      if (users.containsKey(username)) {
+        setState(() => _error = 'That username already exists.');
+        return;
+      }
+      users[username] = hash;
+      await preferences.setString('moneymonk_users', jsonEncode(users));
+      final legacyMoney = preferences.getString('moneymonk_money');
+      final legacyLoans = preferences.getString('moneymonk_loans');
+      if (legacyMoney != null && preferences.getString('moneymonk_money_$username') == null) {
+        await preferences.setString('moneymonk_money_$username', legacyMoney);
+      }
+      if (legacyLoans != null && preferences.getString('moneymonk_loans_$username') == null) {
+        await preferences.setString('moneymonk_loans_$username', legacyLoans);
+      }
+      await preferences.remove('moneymonk_money');
+      await preferences.remove('moneymonk_loans');
+    } else if (users[username] != hash) {
+      setState(() => _error = 'Username or password is incorrect.');
+      return;
+    }
+    await preferences.setString('moneymonk_current_user', username);
+    if (!mounted) return;
+    setState(() => _currentUser = username);
+  }
+
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isBusy) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_currentUser != null) return MoneyMonkHomePage(username: _currentUser!);
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('MoneyMonk', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: moneyMonkNavy)),
+                  const SizedBox(height: 8),
+                  Text(_isSignup ? 'Create your account' : 'Sign in to your account', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 24),
+                  TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person_outline))),
+                  const SizedBox(height: 16),
+                  TextField(controller: _passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock_outline))),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!, style: const TextStyle(color: moneyMonkError)),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(width: double.infinity, child: FilledButton(onPressed: _submit, child: Text(_isSignup ? 'Sign up' : 'Sign in'))),
+                  TextButton(onPressed: () => setState(() { _isSignup = !_isSignup; _error = null; }), child: Text(_isSignup ? 'Already have an account? Sign in' : 'New here? Sign up')),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -382,7 +502,9 @@ class LoanYear {
 }
 
 class MoneyMonkHomePage extends StatefulWidget {
-  const MoneyMonkHomePage({super.key});
+  const MoneyMonkHomePage({super.key, required this.username});
+
+  final String username;
 
   @override
   State<MoneyMonkHomePage> createState() => _MoneyMonkHomePageState();
@@ -405,8 +527,10 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   Future<void> _loadSavedData() async {
     try {
       final preferences = await SharedPreferences.getInstance();
-      final money = preferences.getString('moneymonk_money');
-      final loans = preferences.getString('moneymonk_loans');
+      final moneyKey = 'moneymonk_money_${widget.username}';
+      final loansKey = 'moneymonk_loans_${widget.username}';
+      final money = preferences.getString(moneyKey);
+      final loans = preferences.getString(loansKey);
       if (!mounted) return;
       setState(() {
         if (money != null) {
@@ -426,8 +550,19 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
 
   Future<void> _saveData() async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString('moneymonk_money', jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList()));
-    await preferences.setString('moneymonk_loans', jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList()));
+    await preferences.setString('moneymonk_money_${widget.username}', jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList()));
+    await preferences.setString('moneymonk_loans_${widget.username}', jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList()));
+  }
+
+  Future<void> _signOut() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove('moneymonk_current_user');
+    if (mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const LoginPage()),
+        (_) => false,
+      );
+    }
   }
 
   void _handleAddMoney() {
@@ -602,6 +737,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   Widget build(BuildContext context) {
     final screens = <Widget>[
       HomeSummaryScreen(
+        username: widget.username,
         moneyEntries: _moneyEntries,
         loanEntries: _loanEntries,
         selectedMonth: _selectedMonth,
@@ -642,6 +778,40 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
             color: moneyMonkNavy,
           ),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome, color: moneyMonkNavy),
+            tooltip: 'MoneyMonk AI Advisor',
+            onPressed: () {
+              setState(() {
+                _selectedIndex = 0;
+              });
+            },
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Account & Settings',
+            onSelected: (value) {
+              if (value == 'signOut') _signOut();
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Text('User: ${widget.username}', style: const TextStyle(fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'signOut',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, size: 18, color: moneyMonkError),
+                    SizedBox(width: 8),
+                    Text('Sign out', style: TextStyle(color: moneyMonkError)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -678,9 +848,15 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   }
 }
 
+enum AiTier {
+  free,
+  paid,
+}
+
 class HomeSummaryScreen extends StatelessWidget {
   const HomeSummaryScreen({
     super.key,
+    required this.username,
     required this.moneyEntries,
     required this.loanEntries,
     required this.selectedMonth,
@@ -690,6 +866,7 @@ class HomeSummaryScreen extends StatelessWidget {
     required this.onLoansTap,
   });
 
+  final String username;
   final List<MoneyEntry> moneyEntries;
   final List<LoanEntry> loanEntries;
   final DateTime selectedMonth;
@@ -752,6 +929,7 @@ class HomeSummaryScreen extends StatelessWidget {
         Text('${moneyEntries.length} money entries saved', style: const TextStyle(color: moneyMonkSecondaryText)),
         const SizedBox(height: 20),
         _MoneyMonkAdvisor(
+          username: username,
           moneyEntries: moneyEntries,
           loanEntries: loanEntries,
           monthlyIncome: monthlyIncome,
@@ -766,12 +944,14 @@ class HomeSummaryScreen extends StatelessWidget {
 
 class _MoneyMonkAdvisor extends StatefulWidget {
   const _MoneyMonkAdvisor({
+    required this.username,
     required this.moneyEntries,
     required this.loanEntries,
     required this.monthlyIncome,
     required this.monthlyExpense,
   });
 
+  final String username;
   final List<MoneyEntry> moneyEntries;
   final List<LoanEntry> loanEntries;
   final int monthlyIncome;
@@ -784,109 +964,609 @@ class _MoneyMonkAdvisor extends StatefulWidget {
 class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
   final _questionController = TextEditingController();
   final _apiKeyController = TextEditingController();
-  String _answer = 'Ask about your balance, monthly spending, or loans.';
+  final _googleEmailController = TextEditingController();
+  
+  AiTier _tier = AiTier.free;
+  String _savedApiKey = '';
+  String _savedGoogleAccount = '';
+  String _answer = 'Ask about your savings rate, debt payoff strategy, or budget breakdown.';
   bool _isAskingGemini = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPreferences();
+  }
+
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    final tierStr = prefs.getString('moneymonk_ai_tier_${widget.username}') ?? 'free';
+    final key = prefs.getString('moneymonk_gemini_key_${widget.username}') ?? '';
+    final googleAcc = prefs.getString('moneymonk_google_account_${widget.username}') ?? '';
+    
+    if (mounted) {
+      setState(() {
+        _tier = tierStr == 'paid' ? AiTier.paid : AiTier.free;
+        _savedApiKey = key;
+        _savedGoogleAccount = googleAcc;
+        _apiKeyController.text = key;
+        _googleEmailController.text = googleAcc;
+      });
+    }
+  }
+
+  Future<void> _savePreferences({required AiTier tier, required String apiKey, required String googleAccount}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('moneymonk_ai_tier_${widget.username}', tier == AiTier.paid ? 'paid' : 'free');
+    await prefs.setString('moneymonk_gemini_key_${widget.username}', apiKey.trim());
+    await prefs.setString('moneymonk_google_account_${widget.username}', googleAccount.trim());
+
+    if (mounted) {
+      setState(() {
+        _tier = tier;
+        _savedApiKey = apiKey.trim();
+        _savedGoogleAccount = googleAccount.trim();
+      });
+    }
+  }
 
   @override
   void dispose() {
     _questionController.dispose();
     _apiKeyController.dispose();
+    _googleEmailController.dispose();
     super.dispose();
   }
 
-  Future<void> _askGemini() async {
-    final apiKey = _apiKeyController.text.trim();
-    final question = _questionController.text.trim();
-    if (apiKey.isEmpty || question.isEmpty) {
-      setState(() => _answer = 'Enter your Gemini API key and a question first.');
+  Future<void> _askGemini({String? predefinedPrompt}) async {
+    final effectiveQuestion = predefinedPrompt ?? _questionController.text.trim();
+    if (effectiveQuestion.isEmpty) {
+      setState(() => _answer = 'Please enter or select a question first.');
       return;
     }
+
+    final key = _savedApiKey.isNotEmpty ? _savedApiKey : _apiKeyController.text.trim();
+
+    if (key.isEmpty) {
+      _showAiSettingsDialog(context, initialMessage: 'Please set up your Gemini API Key first.');
+      return;
+    }
+
     setState(() {
       _isAskingGemini = true;
-      _answer = 'Gemini is reviewing your MoneyMonk data...';
+      _answer = 'Gemini (${_tier == AiTier.free ? "Free Tier" : "Paid / Cloud Tier"}) is analyzing your finances...';
     });
-    final moneyContext = widget.moneyEntries.map((entry) => '${entry.type.name}: ${entry.name} ${entry.amountInPaise} paise').join(', ');
-    final loanContext = widget.loanEntries.map((loan) => '${loan.name}: outstanding ${loan.outstandingAmountInPaise} paise, EMI ${loan.emiInPaise} paise, extra EMI ${loan.extraEmiInPaise} paise, ROI ${loan.interestRatePerAnnum}%').join('; ');
-    final prompt = '''You are the MoneyMonk financial information assistant. Answer only from the supplied context. Be concise, factual, and do not claim to be a regulated financial adviser. Mention assumptions when needed and advise checking prepayment charges before recommending extra loan payments.
 
-Money context: monthly income ${widget.monthlyIncome} paise, monthly expense ${widget.monthlyExpense} paise. Entries: $moneyContext
-Loan context: $loanContext
-User question: $question''';
+    final balance = widget.monthlyIncome - widget.monthlyExpense;
+    final savingsRate = widget.monthlyIncome > 0 ? ((balance / widget.monthlyIncome) * 100).toStringAsFixed(1) : '0';
+
+    final moneyBreakdown = widget.moneyEntries.map((e) => 
+      '- ${e.type == MoneyEntryType.income ? "Income" : "Expense"}: ${e.name} (${_formatCurrency(e.amountInPaise)}, ${e.mode == MoneyEntryMode.recurring ? "Recurring" : "One-time"})'
+    ).join('\n');
+
+    final loanBreakdown = widget.loanEntries.map((l) => 
+      '- ${l.name}: Outstanding ${_formatCurrency(l.outstandingAmountInPaise)}, EMI ${_formatCurrency(l.emiInPaise)}${l.extraEmiInPaise > 0 ? " + Extra EMI ${_formatCurrency(l.extraEmiInPaise)}" : ""}, Interest ${l.interestRatePerAnnum}% p.a.'
+    ).join('\n');
+
+    final systemPrompt = '''You are the MoneyMonk AI Financial Advisor.
+You provide clear, friendly, realistic, and highly practical financial advice based strictly on the user's supplied figures.
+All amounts are in Indian Rupees (₹).
+
+Guidelines:
+1. Be structured and concise: use clear headings, bullet points, and highlight key numbers.
+2. Emphasize prudent debt reduction (prioritizing high-interest loans first - debt avalanche method) while maintaining a safe emergency fund.
+3. Suggest practical ways to trim listed expenses or allocate monthly surplus.
+4. If asked about budgeting, use realistic frameworks like the 50/30/20 rule adjusted for their loans.
+5. Provide honest, encouraging observations without making misleading investment guarantees.
+
+User Financial Summary:
+- Monthly Income: ${_formatCurrency(widget.monthlyIncome)}
+- Monthly Expenses: ${_formatCurrency(widget.monthlyExpense)}
+- Monthly Net Balance (Surplus/Deficit): ${_formatCurrency(balance)} (Savings Rate: $savingsRate%)
+- Active Loans Count: ${widget.loanEntries.length}
+
+Money Entries Breakdown:
+${moneyBreakdown.isEmpty ? "No individual entries recorded yet." : moneyBreakdown}
+
+Active Loans Breakdown:
+${loanBreakdown.isEmpty ? "No active loans." : loanBreakdown}
+
+User Query: $effectiveQuestion''';
+
     try {
       final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey'),
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$key'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'contents': [{'parts': [{'text': prompt}]}]}),
+        body: jsonEncode({
+          'contents': [
+            {
+              'parts': [
+                {'text': systemPrompt}
+              ]
+            }
+          ]
+        }),
       );
+
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      final candidates = body['candidates'] as List?;
-      final text = candidates?.isNotEmpty == true
-          ? (((candidates!.first as Map)['content'] as Map)['parts'] as List).first as Map
-          : null;
-      if (response.statusCode >= 200 && response.statusCode < 300 && text?['text'] is String) {
-        _answer = text!['text'] as String;
+      
+      if (response.statusCode == 200) {
+        final candidates = body['candidates'] as List?;
+        if (candidates != null && candidates.isNotEmpty) {
+          final content = candidates.first['content'] as Map<String, dynamic>?;
+          final parts = content?['parts'] as List?;
+          if (parts != null && parts.isNotEmpty) {
+            final text = parts.first['text'] as String?;
+            if (text != null && text.isNotEmpty) {
+              setState(() => _answer = text.trim());
+              return;
+            }
+          }
+        }
+        setState(() => _answer = 'Received empty response from Gemini. Please try again.');
+      } else if (response.statusCode == 429) {
+        setState(() => _answer = '⚠️ Free Tier Rate limit reached (15 requests/min or 1,500/day). Please wait a moment or switch to Paid Tier in AI Settings.');
+      } else if (response.statusCode == 400 || response.statusCode == 403) {
+        final errorMessage = body['error']?['message'] ?? 'Invalid API key or unauthorized request.';
+        setState(() => _answer = '⚠️ API Key Error: $errorMessage\nPlease check your key in AI Settings.');
       } else {
-        _answer = 'Gemini could not answer. Check the API key and network connection.';
+        setState(() => _answer = 'Gemini returned status ${response.statusCode}. Please check your connection or API key.');
       }
-    } catch (_) {
-      _answer = 'Gemini could not answer. Check the API key and network connection.';
+    } catch (e) {
+      setState(() => _answer = 'Connection error: Could not reach Gemini. Please verify your internet connection and API key.');
+    } finally {
+      if (mounted) setState(() => _isAskingGemini = false);
     }
-    if (mounted) setState(() => _isAskingGemini = false);
   }
 
-  void _ask() {
-    final question = _questionController.text.toLowerCase();
-    final balance = widget.monthlyIncome - widget.monthlyExpense;
-    if (question.contains('save') || question.contains('saving') || question.contains('balance')) {
-      _answer = 'Your monthly balance is ${_formatCurrency(balance)} after listed income and expenses.';
-    } else if (question.contains('expense') || question.contains('spend')) {
-      _answer = 'Your listed monthly expenses are ${_formatCurrency(widget.monthlyExpense)}.';
-    } else if (question.contains('loan') || question.contains('emi')) {
-      final payment = widget.loanEntries.fold<int>(0, (sum, loan) => sum + loan.emiInPaise + loan.extraEmiInPaise);
-      _answer = 'Your ${widget.loanEntries.length} loan(s) require ${_formatCurrency(payment)} per month, including extra EMI.';
-    } else if (question.contains('income') || question.contains('earn')) {
-      _answer = 'Your listed monthly income is ${_formatCurrency(widget.monthlyIncome)}.';
-    } else {
-      _answer = 'I can answer about balance, income, expenses, EMI, or loans using your saved MoneyMonk data.';
-    }
-    setState(() {});
+  void _showAiSettingsDialog(BuildContext context, {String? initialMessage}) {
+    var dialogTier = _tier;
+    final dialogKeyController = TextEditingController(text: _savedApiKey);
+    final dialogGoogleController = TextEditingController(text: _savedGoogleAccount);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 24,
+                bottom: MediaQuery.of(dialogContext).viewInsets.bottom + 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.auto_awesome, color: moneyMonkNavy),
+                            SizedBox(width: 8),
+                            Text('AI Advisor Settings', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(dialogContext),
+                        ),
+                      ],
+                    ),
+                    if (initialMessage != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: moneyMonkNavyLight,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline, color: moneyMonkNavy, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(initialMessage, style: const TextStyle(fontSize: 13, color: moneyMonkNavy, fontWeight: FontWeight.w500))),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 18),
+                    const Text('Select AI Service Tier:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                    const SizedBox(height: 10),
+                    
+                    // Free Tier Option Card
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => setModalState(() => dialogTier = AiTier.free),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: dialogTier == AiTier.free ? moneyMonkNavyLight : moneyMonkSurface,
+                          border: Border.all(
+                            color: dialogTier == AiTier.free ? moneyMonkNavy : moneyMonkBorder,
+                            width: dialogTier == AiTier.free ? 2 : 1,
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              dialogTier == AiTier.free ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                              color: moneyMonkNavy,
+                              size: 22,
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text('Free Tier (Google AI Studio)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                                      SizedBox(width: 8),
+                                      Chip(
+                                        label: Text('100% Free', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: moneyMonkIncome)),
+                                        backgroundColor: Color(0xFFDCFCE7),
+                                        padding: EdgeInsets.zero,
+                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(height: 4),
+                                  Text(
+                                    '15 Requests/Min • 1,500 Requests/Day • Gemini 2.0 Flash\nNo credit card required. Free forever for personal use.',
+                                    style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Paid / Google Account Option Card
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => setModalState(() => dialogTier = AiTier.paid),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: dialogTier == AiTier.paid ? moneyMonkNavyLight : moneyMonkSurface,
+                          border: Border.all(
+                            color: dialogTier == AiTier.paid ? moneyMonkNavy : moneyMonkBorder,
+                            width: dialogTier == AiTier.paid ? 2 : 1,
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              dialogTier == AiTier.paid ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                              color: moneyMonkNavy,
+                              size: 22,
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text('Paid / Google Cloud Tier', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                                      SizedBox(width: 8),
+                                      Chip(
+                                        label: Text('Dedicated', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: moneyMonkNavy)),
+                                        backgroundColor: Color(0xFFE0E7FF),
+                                        padding: EdgeInsets.zero,
+                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(height: 4),
+                                  Text(
+                                    'Enterprise Quotas • Strict Data Privacy • Vertex AI / Google Cloud\nBring your own billing-enabled Google API key or connect Google Account.',
+                                    style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+
+                    // Google Account / Sign-in Section (For Paid / Cloud Users)
+                    if (dialogTier == AiTier.paid) ...[
+                      const Text('Google Account / Organization (Optional):', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: dialogGoogleController,
+                        decoration: const InputDecoration(
+                          hintText: 'e.g. yourname@gmail.com or GCP Project',
+                          prefixIcon: Icon(Icons.account_circle_outlined),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+
+                    // API Key Field
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          dialogTier == AiTier.free ? 'Google AI Studio API Key (Free):' : 'Google Cloud / Gemini API Key:',
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
+                        if (dialogKeyController.text.isNotEmpty)
+                          TextButton(
+                            onPressed: () {
+                              setModalState(() {
+                                dialogKeyController.clear();
+                              });
+                            },
+                            child: const Text('Clear', style: TextStyle(color: moneyMonkError, fontSize: 12)),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: dialogKeyController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        hintText: 'AIzaSy...',
+                        prefixIcon: Icon(Icons.key_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Instructions helper
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: moneyMonkBackground,
+                        border: Border.all(color: moneyMonkBorder),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('💡 How to get your free key in 30 seconds:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: moneyMonkPrimaryText)),
+                          SizedBox(height: 4),
+                          Text('1. Visit Google AI Studio at aistudio.google.com\n2. Click "Get API key" -> "Create API key"\n3. Paste it above and click Save Settings.', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText, height: 1.4)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Save Button
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.check),
+                        label: const Text('Save AI Settings'),
+                        onPressed: () async {
+                          final scaffoldMessenger = ScaffoldMessenger.of(context);
+                          await _savePreferences(
+                            tier: dialogTier,
+                            apiKey: dialogKeyController.text,
+                            googleAccount: dialogGoogleController.text,
+                          );
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
+                          scaffoldMessenger.showSnackBar(
+                            const SnackBar(content: Text('AI Advisor settings updated successfully!')),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasKey = _savedApiKey.isNotEmpty;
+
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Ask MoneyMonk', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(child: TextField(controller: _questionController, decoration: const InputDecoration(hintText: 'How much can I save this month?'))),
-            IconButton(onPressed: _ask, icon: const Icon(Icons.send), tooltip: 'Ask MoneyMonk'),
-          ]),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _apiKeyController,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'Gemini API key (not saved)', prefixIcon: Icon(Icons.key_outlined)),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _isAskingGemini ? null : _askGemini,
-              icon: _isAskingGemini ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome),
-              label: const Text('Ask Gemini'),
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.auto_awesome, color: moneyMonkNavy, size: 22),
+                    const SizedBox(width: 8),
+                    const Text('MoneyMonk AI Advisor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+                InkWell(
+                  onTap: () => _showAiSettingsDialog(context),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _tier == AiTier.free ? const Color(0xFFDCFCE7) : const Color(0xFFE0E7FF),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _tier == AiTier.free ? moneyMonkIncome : moneyMonkNavy,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _tier == AiTier.free ? 'Free Tier' : 'Paid Tier',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: _tier == AiTier.free ? moneyMonkIncome : moneyMonkNavy,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.settings_outlined, size: 14),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(_answer, style: const TextStyle(color: moneyMonkSecondaryText)),
-        ]),
+            const SizedBox(height: 6),
+            Text(
+              _tier == AiTier.free 
+                  ? 'Powered by Gemini 2.0 Flash (100% Free • 1,500 req/day)'
+                  : 'Powered by Gemini Dedicated Cloud Tier (Private & High Quota)',
+              style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+            ),
+            const SizedBox(height: 14),
+
+            // Quick Question Chips
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  ActionChip(
+                    avatar: const Icon(Icons.health_and_safety_outlined, size: 16),
+                    label: const Text('Financial Health Audit', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      _questionController.text = 'Analyze my monthly financial health and give me key recommendations.';
+                      _askGemini(predefinedPrompt: _questionController.text);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  ActionChip(
+                    avatar: const Icon(Icons.trending_down_outlined, size: 16),
+                    label: const Text('Debt Payoff Plan', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      _questionController.text = 'What is the fastest strategy to pay off my loans (avalanche vs snowball)?';
+                      _askGemini(predefinedPrompt: _questionController.text);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  ActionChip(
+                    avatar: const Icon(Icons.savings_outlined, size: 16),
+                    label: const Text('Reduce Expenses', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      _questionController.text = 'Where are my highest expenses and how can I save more this month?';
+                      _askGemini(predefinedPrompt: _questionController.text);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  ActionChip(
+                    avatar: const Icon(Icons.pie_chart_outline, size: 16),
+                    label: const Text('50/30/20 Budget', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      _questionController.text = 'Break down my current monthly income into a recommended 50/30/20 budget.';
+                      _askGemini(predefinedPrompt: _questionController.text);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Question Input
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _questionController,
+                    decoration: const InputDecoration(
+                      hintText: 'Ask financial advice, debt tips, or budget rules...',
+                    ),
+                    onSubmitted: (_) => _askGemini(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  icon: _isAskingGemini 
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.send),
+                  tooltip: 'Ask Gemini',
+                  onPressed: _isAskingGemini ? null : () => _askGemini(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // AI Status & Settings Shortcut
+            if (!hasKey) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  border: Border.all(color: const Color(0xFFFDE68A)),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.key_outlined, color: moneyMonkWarning, size: 20),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Set your free Google Gemini API key to activate AI insights.',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => _showAiSettingsDialog(context),
+                      child: const Text('Setup Key', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+
+            // Response Box
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: moneyMonkBackground,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: moneyMonkBorder),
+              ),
+              child: SelectableText(
+                _answer,
+                style: const TextStyle(
+                  color: moneyMonkPrimaryText,
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0).format(paise / 100);
+  static String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0).format(paise / 100);
 }
 
 class _SummaryTile extends StatelessWidget {

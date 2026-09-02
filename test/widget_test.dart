@@ -9,8 +9,19 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('MoneyMonk shows empty Money and Loans screens', (tester) async {
+  Future<void> signUp(WidgetTester tester) async {
     await tester.pumpWidget(const MoneyMonkApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New here? Sign up'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).at(0), 'tester');
+    await tester.enterText(find.byType(TextField).at(1), 'password');
+    await tester.tap(find.text('Sign up'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('MoneyMonk shows empty Money and Loans screens', (tester) async {
+    await signUp(tester);
 
     expect(find.text('Home'), findsAtLeastNWidgets(1));
     await tester.tap(find.text('Money'));
@@ -33,7 +44,7 @@ void main() {
   });
 
   testWidgets('Add Money creates income entry and updates totals', (tester) async {
-    await tester.pumpWidget(const MoneyMonkApp());
+    await signUp(tester);
 
     await tester.tap(find.text('Money'));
     await tester.pumpAndSettle();
@@ -55,7 +66,7 @@ void main() {
   });
 
   testWidgets('Month and Year view switching works', (tester) async {
-    await tester.pumpWidget(const MoneyMonkApp());
+    await signUp(tester);
 
     await tester.tap(find.text('Money'));
     await tester.pumpAndSettle();

@@ -28,7 +28,7 @@ Implementation guardrails for this project:
 - Do not switch to React, Vite, TypeScript, Next.js, Vue, Angular, or another frontend framework.
 - Use Flutter's built-in state management where practical and keep dependencies minimal.
 - This project should be created from a clean Flutter app when the repository is empty.
-- For Stage 1, implement only the app foundation, visual shell, Money screen, Loans screen, empty states, and navigation. Do not implement add forms, persistence, or advanced financial logic.
+- The original Stage 1 scope was the app foundation, visual shell, Money screen, Loans screen, empty states, and navigation. The current project has progressed beyond Stage 1; preserve the implemented MVP behavior unless the product owner explicitly changes scope.
 
 2. Non-Negotiable Product Philosophy
 
@@ -858,7 +858,7 @@ do not overwrite unrelated settings blindly
 
 If persistent user data is required, implement it in the simplest secure way that fits the project's actual architecture.
 
-Do not add authentication, cloud functions, analytics, or other Firebase services unless they are genuinely required by the implemented product.
+Do not add cloud functions, analytics, or other Firebase services unless they are genuinely required by the implemented product. User accounts are now part of the product scope, but the current MVP uses local username/password accounts until a secure Firebase Authentication migration is configured.
 
 Never expose private credentials or secrets in frontend code.
 
@@ -1500,3 +1500,29 @@ Provide Add another row and Remove row actions, then save all valid rows togethe
 The saved Money screen must continue to show the conceptual table as Income | Amount | Expense | Amount, with independent sides and totals below. On narrow screens, reflow the input rows vertically while keeping Type, description, amount, schedule, and frequency clear and usable.
 
 Dates may use a sensible shared date control for a batch to keep the flow simple. Recurring entries must still auto-populate applicable future months, and editing a recurring occurrence must create a month-specific override without changing its future default.
+
+42. Current User, Storage, and Advisor Contract
+
+MoneyMonk currently supports a simple local account flow:
+
+- The first screen is Login / Sign up.
+- Sign up uses a username and password.
+- Passwords must never be stored as plain text; the current local MVP stores a password hash.
+- A signed-in session persists across app restarts until the user signs out.
+- Money and Loan data must be stored under the signed-in user's namespace.
+- Existing pre-account local data may be migrated only to the first account and must not become visible to later accounts.
+- Sign out must clear only the active session, not delete the user's saved data.
+
+Local account storage is suitable for the current single-device MVP only. It is not a substitute for production-grade authentication, password recovery, or cross-device synchronization. When multi-device or production multi-user access is required, migrate to Firebase Authentication and user-owned Firestore documents with security rules.
+
+Home is a summary page, not a second detailed dashboard. It may show monthly balance, income, expenses, loan count, outstanding principal, total EMI including extra EMI, and a concise factual priority. Summary sections must drill down to the detailed Money or Loans page when tapped.
+
+The in-app advisor may answer questions using the user's visible MoneyMonk context: income, expenses, recurring entries, balance, loans, EMI, extra EMI, ROI, amortization, and forecast results. Deterministic local answers should remain available without a network. Gemini integration is optional and must:
+
+- Send only the minimum relevant summarized context.
+- Never hard-code or persist an API key in source or user data.
+- Clearly tell users when a Gemini key/network is required.
+- Avoid claiming to provide regulated financial advice.
+- Recommend checking loan prepayment charges before suggesting extra payments.
+
+Do not assume a user's ordinary Gemini chat subscription can be accessed automatically. Direct Gemini API access requires an API key or a properly configured secure backend. Never expose a provider secret in a production Flutter client.
