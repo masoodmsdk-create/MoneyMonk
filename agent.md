@@ -1519,18 +1519,18 @@ Home is a summary page, not a second detailed dashboard. It shows monthly balanc
 
 43. Google Gemini Multi-Tier AI Advisor Specification
 
-MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gemini-2.0-flash`). The AI system is designed with dual-tier support to give users complete flexibility:
+MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gemini-3.6-flash` / `gemini-flash-latest`). The AI system is designed with dual-tier support to give users complete flexibility:
 
 ### A. Free Tier (Default - Google AI Studio)
-- **Model**: `gemini-2.0-flash`
-- **Quota**: 15 Requests Per Minute (RPM), 1,500 Requests Per Day (RPD)
+- **Model**: `gemini-3.6-flash` (with automatic fallback to `gemini-flash-latest` and `gemini-2.5-flash`).
+- **Quota**: 15 Requests Per Minute (RPM), 1,500 Requests Per Day (RPD).
 - **Cost & Strict No-Billing**: **$0.00 (100% Free forever)**. The default free tier operates strictly under non-billable AI Studio limits. If daily free quotas are reached, requests return standard rate-limit (429) notifications rather than generating charges.
-- **Default App Key**: Configured with a default free tier key so all users can experience AI advisory out of the box with zero setup.
+- **Default App Key**: Configured with a default free tier key injected via `--dart-define=GEMINI_API_KEY` so all users can experience AI advisory out of the box with zero setup.
 - **Key Storage**: Keys and tier preferences are stored locally in the user's browser/device session via `SharedPreferences` under the user's namespace (`moneymonk_gemini_key_$username`, `moneymonk_ai_tier_$username`).
 
 ### B. Paid / Google Cloud Tier
 - **Target Audience**: Users with billing-enabled Google Cloud / Vertex AI / Google AI Studio paid accounts or enterprise organizations.
-- **Model**: `gemini-2.0-flash` (or pro models) with dedicated quotas, enterprise SLAs, and strict zero-logging data privacy guarantees.
+- **Model**: Dedicated quotas, enterprise SLAs, and strict zero-logging data privacy guarantees.
 - **Account Linking**: Allows entering a private Google Cloud API key and connecting a Google account identifier (`moneymonk_google_account_$username`).
 
 ### C. Advisor Capabilities & Guardrails
@@ -1546,7 +1546,7 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 44. Hosting, Build, and Git Deployment Contract
 
 - **Technology Stack**: Flutter (Web, iOS, Android, macOS, Linux, Windows) with Dart SDK `^3.13.1`.
-- **Web Build Command**: `flutter build web --release`
+- **Web Build Command**: `flutter build web --release --dart-define=GEMINI_API_KEY="..."`
 - **Static Analysis**: `flutter analyze` must pass with zero errors and zero lint warnings before deployment.
 - **Hosting Platform**: Firebase Hosting on project `moneymonk-d5605`.
 - **Live URLs**:
@@ -1556,4 +1556,29 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
   - Remote Repository: `https://github.com/masoodmsdk-create/MoneyMonk`
   - Default Branch: `main`
 - **Deployment Process**: Build web release -> Deploy via `firebase deploy --only hosting` -> Commit and push clean working tree to `origin/main`.
+
+45. Authentication, Session Management, and User Data Persistence Model
+
+- **Session State vs. Permanent Data**:
+  - A user's active session is tracked via `moneymonk_current_user`.
+  - When a user signs out (`_signOut()`), **only** `moneymonk_current_user` is removed.
+  - **The user's financial records (`moneymonk_money_$username`), loans (`moneymonk_loans_$username`), AI settings (`moneymonk_ai_tier_$username`), and credentials (`moneymonk_users`) are PERMANENTLY PERSISTED in `localStorage` / `SharedPreferences` and are NEVER deleted on logout or session expiration.**
+  - When the user logs back in with their username and password, all their data is automatically restored.
+- **Data Isolation**: All income, expenses, and loan entries are namespaced under the user's lowercase username key to prevent cross-account contamination.
+
+46. Forgot Password & Self-Service Account Recovery Specification
+
+- **Entry Point**: A prominent "Forgot Password?" button on the login screen below the password field.
+- **Recovery Flow**:
+  1. Opens a modal sheet where the user inputs their username, new password (min 6 chars), and password confirmation.
+  2. Verifies that the username exists in `moneymonk_users`. If not, shows clear inline error: `"No account found with username '<username>'."`
+  3. Verifies that new password matches confirmation.
+  4. Generates SHA-256 password hash `_hashPassword(username, newPassword)` and updates `moneymonk_users` in `SharedPreferences`.
+  5. Automatically prefills the updated credentials into the login page and shows a success confirmation banner.
+
+47. Form Validation, Inline Error Hierarchy & UX Rules
+
+- **Prominent Error Banners**: All critical modals (`AddLoanSheet`, `AddMoneySheet`, `ResetPassword`) feature top-level alert boxes displaying human-readable failure reasons.
+- **Field-Level Indicators**: Every mandatory field is marked with an asterisk `*` and provides inline red border and error text feedback on interaction.
+- **Safe Parsing**: All numeric inputs (currency, ROI %, EMI, duration) use `double.tryParse` / `int.tryParse` with sanity bounds checks (> 0, non-negative) to prevent runtime crashes.
 

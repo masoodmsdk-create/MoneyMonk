@@ -173,6 +173,174 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _currentUser = username);
   }
 
+  void _showForgotPasswordDialog(BuildContext context) {
+    final resetUserCtrl = TextEditingController(text: _usernameController.text.trim());
+    final newPassCtrl = TextEditingController();
+    final confirmPassCtrl = TextEditingController();
+    String? dialogError;
+    bool obscureNew = true;
+    bool obscureConfirm = true;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 24,
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.lock_reset_outlined, color: moneyMonkNavy, size: 26),
+                            SizedBox(width: 10),
+                            Text('Reset Password', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Enter your registered username and set a new password.',
+                      style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText),
+                    ),
+                    const SizedBox(height: 18),
+
+                    if (dialogError != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEE2E2),
+                          border: Border.all(color: moneyMonkError),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline, color: moneyMonkError, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(dialogError!, style: const TextStyle(color: moneyMonkError, fontWeight: FontWeight.w600, fontSize: 13))),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    TextField(
+                      controller: resetUserCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Username *',
+                        prefixIcon: Icon(Icons.person_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    TextField(
+                      controller: newPassCtrl,
+                      obscureText: obscureNew,
+                      decoration: InputDecoration(
+                        labelText: 'New Password (min 6 characters) *',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(obscureNew ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                          onPressed: () => setSheetState(() => obscureNew = !obscureNew),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    TextField(
+                      controller: confirmPassCtrl,
+                      obscureText: obscureConfirm,
+                      decoration: InputDecoration(
+                        labelText: 'Confirm New Password *',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(obscureConfirm ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                          onPressed: () => setSheetState(() => obscureConfirm = !obscureConfirm),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.check),
+                        label: const Text('Update Password'),
+                        onPressed: () async {
+                          final user = resetUserCtrl.text.trim().toLowerCase();
+                          final newPass = newPassCtrl.text;
+                          final confirmPass = confirmPassCtrl.text;
+
+                          if (user.length < 3) {
+                            setSheetState(() => dialogError = 'Username must be at least 3 characters.');
+                            return;
+                          }
+                          if (newPass.length < 6) {
+                            setSheetState(() => dialogError = 'New password must be at least 6 characters.');
+                            return;
+                          }
+                          if (newPass != confirmPass) {
+                            setSheetState(() => dialogError = 'Passwords do not match.');
+                            return;
+                          }
+
+                          final messenger = ScaffoldMessenger.of(context);
+                          final prefs = await SharedPreferences.getInstance();
+                          final users = jsonDecode(prefs.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
+
+                          if (!users.containsKey(user)) {
+                            setSheetState(() => dialogError = "No account found with username '$user'.");
+                            return;
+                          }
+
+                          final newHash = _hashPassword(user, newPass);
+                          users[user] = newHash;
+                          await prefs.setString('moneymonk_users', jsonEncode(users));
+
+                          if (sheetContext.mounted) {
+                            Navigator.pop(sheetContext);
+                          }
+
+                          _usernameController.text = user;
+                          _passwordController.text = newPass;
+                          setState(() => _error = null);
+
+                          messenger.showSnackBar(
+                            const SnackBar(content: Text('Password reset successfully! You can now sign in.')),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _usernameController.dispose();
@@ -201,6 +369,20 @@ class _LoginPageState extends State<LoginPage> {
                   TextField(controller: _usernameController, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person_outline))),
                   const SizedBox(height: 16),
                   TextField(controller: _passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock_outline))),
+                  if (!_isSignup) ...[
+                    const SizedBox(height: 6),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => _showForgotPasswordDialog(context),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text('Forgot Password?', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: moneyMonkNavy)),
+                      ),
+                    ),
+                  ],
                   if (_error != null) ...[
                     const SizedBox(height: 12),
                     Text(_error!, style: const TextStyle(color: moneyMonkError)),
