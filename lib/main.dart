@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -393,6 +394,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   final List<LoanEntry> _loanEntries = <LoanEntry>[];
   DateTime _selectedMonth = DateTime(2026, 9);
   bool _isMonthlyView = true;
+  bool _isLoadingSavedData = true;
 
   @override
   void initState() {
@@ -401,18 +403,25 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   }
 
   Future<void> _loadSavedData() async {
-    final preferences = await SharedPreferences.getInstance();
-    final money = preferences.getString('moneymonk_money');
-    final loans = preferences.getString('moneymonk_loans');
-    if (!mounted) return;
-    setState(() {
-      if (money != null) {
-        _moneyEntries.addAll((jsonDecode(money) as List).map((item) => MoneyEntry.fromJson(item as Map<String, dynamic>)));
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final money = preferences.getString('moneymonk_money');
+      final loans = preferences.getString('moneymonk_loans');
+      if (!mounted) return;
+      setState(() {
+        if (money != null) {
+          _moneyEntries.addAll((jsonDecode(money) as List).map((item) => MoneyEntry.fromJson(item as Map<String, dynamic>)));
+        }
+        if (loans != null) {
+          _loanEntries.addAll((jsonDecode(loans) as List).map((item) => LoanEntry.fromJson(item as Map<String, dynamic>)));
+        }
+        _isLoadingSavedData = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isLoadingSavedData = false);
       }
-      if (loans != null) {
-        _loanEntries.addAll((jsonDecode(loans) as List).map((item) => LoanEntry.fromJson(item as Map<String, dynamic>)));
-      }
-    });
+    }
   }
 
   Future<void> _saveData() async {
@@ -637,7 +646,9 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-          child: screens[_selectedIndex],
+            child: _isLoadingSavedData
+              ? const Center(child: CircularProgressIndicator())
+              : screens[_selectedIndex],
         ),
       ),
       bottomNavigationBar: NavigationBar(
@@ -739,11 +750,143 @@ class HomeSummaryScreen extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         Text('${moneyEntries.length} money entries saved', style: const TextStyle(color: moneyMonkSecondaryText)),
+        const SizedBox(height: 20),
+        _MoneyMonkAdvisor(
+          moneyEntries: moneyEntries,
+          loanEntries: loanEntries,
+          monthlyIncome: monthlyIncome,
+          monthlyExpense: monthlyExpense,
+        ),
       ]),
     );
   }
 
   static String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: paise % 100 == 0 ? 0 : 2).format(paise / 100);
+}
+
+class _MoneyMonkAdvisor extends StatefulWidget {
+  const _MoneyMonkAdvisor({
+    required this.moneyEntries,
+    required this.loanEntries,
+    required this.monthlyIncome,
+    required this.monthlyExpense,
+  });
+
+  final List<MoneyEntry> moneyEntries;
+  final List<LoanEntry> loanEntries;
+  final int monthlyIncome;
+  final int monthlyExpense;
+
+  @override
+  State<_MoneyMonkAdvisor> createState() => _MoneyMonkAdvisorState();
+}
+
+class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
+  final _questionController = TextEditingController();
+  final _apiKeyController = TextEditingController();
+  String _answer = 'Ask about your balance, monthly spending, or loans.';
+  bool _isAskingGemini = false;
+
+  @override
+  void dispose() {
+    _questionController.dispose();
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _askGemini() async {
+    final apiKey = _apiKeyController.text.trim();
+    final question = _questionController.text.trim();
+    if (apiKey.isEmpty || question.isEmpty) {
+      setState(() => _answer = 'Enter your Gemini API key and a question first.');
+      return;
+    }
+    setState(() {
+      _isAskingGemini = true;
+      _answer = 'Gemini is reviewing your MoneyMonk data...';
+    });
+    final moneyContext = widget.moneyEntries.map((entry) => '${entry.type.name}: ${entry.name} ${entry.amountInPaise} paise').join(', ');
+    final loanContext = widget.loanEntries.map((loan) => '${loan.name}: outstanding ${loan.outstandingAmountInPaise} paise, EMI ${loan.emiInPaise} paise, extra EMI ${loan.extraEmiInPaise} paise, ROI ${loan.interestRatePerAnnum}%').join('; ');
+    final prompt = '''You are the MoneyMonk financial information assistant. Answer only from the supplied context. Be concise, factual, and do not claim to be a regulated financial adviser. Mention assumptions when needed and advise checking prepayment charges before recommending extra loan payments.
+
+Money context: monthly income ${widget.monthlyIncome} paise, monthly expense ${widget.monthlyExpense} paise. Entries: $moneyContext
+Loan context: $loanContext
+User question: $question''';
+    try {
+      final response = await http.post(
+        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'contents': [{'parts': [{'text': prompt}]}]}),
+      );
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final candidates = body['candidates'] as List?;
+      final text = candidates?.isNotEmpty == true
+          ? (((candidates!.first as Map)['content'] as Map)['parts'] as List).first as Map
+          : null;
+      if (response.statusCode >= 200 && response.statusCode < 300 && text?['text'] is String) {
+        _answer = text!['text'] as String;
+      } else {
+        _answer = 'Gemini could not answer. Check the API key and network connection.';
+      }
+    } catch (_) {
+      _answer = 'Gemini could not answer. Check the API key and network connection.';
+    }
+    if (mounted) setState(() => _isAskingGemini = false);
+  }
+
+  void _ask() {
+    final question = _questionController.text.toLowerCase();
+    final balance = widget.monthlyIncome - widget.monthlyExpense;
+    if (question.contains('save') || question.contains('saving') || question.contains('balance')) {
+      _answer = 'Your monthly balance is ${_formatCurrency(balance)} after listed income and expenses.';
+    } else if (question.contains('expense') || question.contains('spend')) {
+      _answer = 'Your listed monthly expenses are ${_formatCurrency(widget.monthlyExpense)}.';
+    } else if (question.contains('loan') || question.contains('emi')) {
+      final payment = widget.loanEntries.fold<int>(0, (sum, loan) => sum + loan.emiInPaise + loan.extraEmiInPaise);
+      _answer = 'Your ${widget.loanEntries.length} loan(s) require ${_formatCurrency(payment)} per month, including extra EMI.';
+    } else if (question.contains('income') || question.contains('earn')) {
+      _answer = 'Your listed monthly income is ${_formatCurrency(widget.monthlyIncome)}.';
+    } else {
+      _answer = 'I can answer about balance, income, expenses, EMI, or loans using your saved MoneyMonk data.';
+    }
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Ask MoneyMonk', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: TextField(controller: _questionController, decoration: const InputDecoration(hintText: 'How much can I save this month?'))),
+            IconButton(onPressed: _ask, icon: const Icon(Icons.send), tooltip: 'Ask MoneyMonk'),
+          ]),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _apiKeyController,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'Gemini API key (not saved)', prefixIcon: Icon(Icons.key_outlined)),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _isAskingGemini ? null : _askGemini,
+              icon: _isAskingGemini ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_awesome),
+              label: const Text('Ask Gemini'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(_answer, style: const TextStyle(color: moneyMonkSecondaryText)),
+        ]),
+      ),
+    );
+  }
+
+  String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0).format(paise / 100);
 }
 
 class _SummaryTile extends StatelessWidget {
@@ -892,31 +1035,23 @@ class MoneyScreen extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: _MoneyColumn(
-                                  label: 'Income',
-                                  entries: incomeEntries,
-                                  accent: moneyMonkIncome,
-                                  tint: const Color(0xFFF2FBF4),
-                                  onEdit: onEditPressed,
-                                  onDelete: onDeletePressed,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _MoneyColumn(
-                                  label: 'Expense',
-                                  entries: expenseEntries,
-                                  accent: moneyMonkExpense,
-                                  tint: const Color(0xFFFEF0EA),
-                                  onEdit: onEditPressed,
-                                  onDelete: onDeletePressed,
-                                ),
-                              ),
-                            ],
+                          LayoutBuilder(
+                            builder: (context, tableConstraints) {
+                              final income = _MoneyColumn(
+                                label: 'Income', entries: incomeEntries, accent: moneyMonkIncome,
+                                tint: const Color(0xFFF2FBF4), onEdit: onEditPressed, onDelete: onDeletePressed,
+                              );
+                              final expense = _MoneyColumn(
+                                label: 'Expense', entries: expenseEntries, accent: moneyMonkExpense,
+                                tint: const Color(0xFFFEF0EA), onEdit: onEditPressed, onDelete: onDeletePressed,
+                              );
+                              if (tableConstraints.maxWidth < 620) {
+                                return Column(children: [income, const SizedBox(height: 18), expense]);
+                              }
+                              return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Expanded(child: income), const SizedBox(width: 12), Expanded(child: expense),
+                              ]);
+                            },
                           ),
                           const SizedBox(height: 16),
                           const Divider(height: 1),
@@ -994,7 +1129,7 @@ class MoneyScreen extends StatelessWidget {
                         key: const ValueKey('money-add-button'),
                         onPressed: onAddPressed,
                         icon: const Icon(Icons.add),
-                        label: const Text('+ Add'),
+                        label: const Text('Add'),
                         style: FilledButton.styleFrom(
                           backgroundColor: moneyMonkNavy,
                           foregroundColor: Colors.white,
@@ -1200,7 +1335,7 @@ class LoansScreen extends StatelessWidget {
                     child: FilledButton.icon(
                       onPressed: onAddPressed,
                       icon: const Icon(Icons.add),
-                      label: const Text('+ Add Loan'),
+                      label: const Text('Add Loan'),
                       style: FilledButton.styleFrom(
                         backgroundColor: moneyMonkNavy,
                         foregroundColor: Colors.white,
