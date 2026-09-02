@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 const Color moneyMonkNavy = Color(0xFF1E3A5F);
 const Color moneyMonkNavyLight = Color(0xFFEAF1F8);
@@ -112,6 +115,31 @@ class MoneyEntry {
   final RecurrenceFrequency? frequency;
   final Map<DateTime, int> overrides;
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'type': type.name,
+        'amount': amountInPaise,
+        'mode': mode.name,
+        'date': date.toIso8601String(),
+        'frequency': frequency?.name,
+        'overrides': overrides.map((key, value) => MapEntry(key.toIso8601String(), value)),
+      };
+
+  factory MoneyEntry.fromJson(Map<String, dynamic> json) {
+    final rawOverrides = (json['overrides'] as Map?)?.cast<String, dynamic>() ?? {};
+    return MoneyEntry(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      type: MoneyEntryType.values.byName(json['type'] as String),
+      amountInPaise: json['amount'] as int,
+      mode: MoneyEntryMode.values.byName(json['mode'] as String),
+      date: DateTime.parse(json['date'] as String),
+      frequency: json['frequency'] == null ? null : RecurrenceFrequency.values.byName(json['frequency'] as String),
+      overrides: rawOverrides.map((key, value) => MapEntry(DateTime.parse(key), value as int)),
+    );
+  }
+
   String get prettyAmount => _formatCurrency(amountInPaise);
 
   int getAmountForMonth(DateTime month) {
@@ -165,6 +193,7 @@ class LoanEntry {
     required this.outstandingAmountInPaise,
     required this.interestRatePerAnnum,
     required this.emiInPaise,
+    this.extraEmiInPaise = 0,
     required this.startDate,
     required this.tenureMonths,
   });
@@ -175,8 +204,33 @@ class LoanEntry {
   final int outstandingAmountInPaise;
   final double interestRatePerAnnum;
   final int emiInPaise;
+  final int extraEmiInPaise;
   final DateTime startDate;
   final int tenureMonths;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'original': originalAmountInPaise,
+        'outstanding': outstandingAmountInPaise,
+        'rate': interestRatePerAnnum,
+        'emi': emiInPaise,
+        'extraEmi': extraEmiInPaise,
+        'startDate': startDate.toIso8601String(),
+        'tenure': tenureMonths,
+      };
+
+  factory LoanEntry.fromJson(Map<String, dynamic> json) => LoanEntry(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        originalAmountInPaise: json['original'] as int,
+        outstandingAmountInPaise: json['outstanding'] as int,
+        interestRatePerAnnum: (json['rate'] as num).toDouble(),
+        emiInPaise: json['emi'] as int,
+        extraEmiInPaise: (json['extraEmi'] as int?) ?? 0,
+        startDate: DateTime.parse(json['startDate'] as String),
+        tenureMonths: json['tenure'] as int,
+      );
 
   String get prettyOriginal => _formatCurrency(originalAmountInPaise);
   String get prettyOutstanding => _formatCurrency(outstandingAmountInPaise);
@@ -198,6 +252,7 @@ class LoanEntry {
       principal: outstandingAmountInPaise,
       annualRate: interestRatePerAnnum,
       emiInPaise: emiInPaise,
+      extraEmiInPaise: extraEmiInPaise,
       startDate: startDate,
     );
   }
@@ -218,6 +273,7 @@ class LoanAmortization {
     required int principal,
     required double annualRate,
     required int emiInPaise,
+    required int extraEmiInPaise,
     required DateTime startDate,
   }) {
     final monthlyRate = annualRate / 100 / 12;
@@ -230,15 +286,16 @@ class LoanAmortization {
     while (currentPrincipal > 0) {
       final interestInPaise = (currentPrincipal * monthlyRate).round();
       
-      if (interestInPaise >= emiInPaise && currentPrincipal > 0) {
+      final scheduledPaymentInPaise = emiInPaise + extraEmiInPaise;
+      if (interestInPaise >= scheduledPaymentInPaise && currentPrincipal > 0) {
         isValid = false;
         invalidReason = 'EMI is insufficient to cover the current interest.';
         break;
       }
 
-      final principalPaymentInPaise = emiInPaise - interestInPaise;
+      final principalPaymentInPaise = scheduledPaymentInPaise - interestInPaise;
       var newPrincipal = currentPrincipal - principalPaymentInPaise;
-      var actualEmiInPaise = emiInPaise;
+      var actualEmiInPaise = scheduledPaymentInPaise;
 
       if (newPrincipal < 0) {
         newPrincipal = 0;
@@ -337,6 +394,33 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   DateTime _selectedMonth = DateTime(2026, 9);
   bool _isMonthlyView = true;
 
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedData();
+  }
+
+  Future<void> _loadSavedData() async {
+    final preferences = await SharedPreferences.getInstance();
+    final money = preferences.getString('moneymonk_money');
+    final loans = preferences.getString('moneymonk_loans');
+    if (!mounted) return;
+    setState(() {
+      if (money != null) {
+        _moneyEntries.addAll((jsonDecode(money) as List).map((item) => MoneyEntry.fromJson(item as Map<String, dynamic>)));
+      }
+      if (loans != null) {
+        _loanEntries.addAll((jsonDecode(loans) as List).map((item) => LoanEntry.fromJson(item as Map<String, dynamic>)));
+      }
+    });
+  }
+
+  Future<void> _saveData() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('moneymonk_money', jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList()));
+    await preferences.setString('moneymonk_loans', jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList()));
+  }
+
   void _handleAddMoney() {
     showModalBottomSheet<void>(
       context: context,
@@ -349,6 +433,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           setState(() {
             _moneyEntries.addAll(entries);
           });
+          _saveData();
         },
       ),
     );
@@ -371,6 +456,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
               _moneyEntries[index] = updated;
             }
           });
+          _saveData();
         },
       ),
     );
@@ -398,6 +484,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         setState(() {
           _moneyEntries.removeWhere((e) => e.id == entry.id);
         });
+        _saveData();
       }
     });
   }
@@ -414,6 +501,24 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           setState(() {
             _loanEntries.add(entry);
           });
+          _saveData();
+        },
+      ),
+    );
+  }
+
+  void _handleEditLoan(LoanEntry loan) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => AddLoanSheet(
+        existingLoan: loan,
+        onSave: (updated) {
+          setState(() {
+            final index = _loanEntries.indexWhere((entry) => entry.id == loan.id);
+            if (index >= 0) _loanEntries[index] = updated;
+          });
+          _saveData();
         },
       ),
     );
@@ -441,6 +546,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         setState(() {
           _loanEntries.removeWhere((e) => e.id == entry.id);
         });
+        _saveData();
       }
     });
   }
@@ -502,6 +608,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       LoansScreen(
         entries: _loanEntries,
         onAddPressed: _handleAddLoan,
+        onEditPressed: _handleEditLoan,
         onDeletePressed: _handleDeleteLoan,
       ),
     ];
@@ -611,8 +718,10 @@ class MoneyScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                   // Month selector and view toggle
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      runSpacing: 8,
+                      spacing: 12,
                     children: [
                       Row(
                         children: [
@@ -721,7 +830,6 @@ class MoneyScreen extends StatelessWidget {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 10),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
@@ -916,11 +1024,13 @@ class LoansScreen extends StatelessWidget {
     super.key,
     required this.entries,
     required this.onAddPressed,
+    required this.onEditPressed,
     required this.onDeletePressed,
   });
 
   final List<LoanEntry> entries;
   final VoidCallback onAddPressed;
+  final ValueChanged<LoanEntry> onEditPressed;
   final ValueChanged<LoanEntry> onDeletePressed;
 
   @override
@@ -943,6 +1053,10 @@ class LoansScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 20),
+                if (entries.isNotEmpty) ...[
+                  _LoanAdvisor(entries: entries),
+                  const SizedBox(height: 20),
+                ],
                 if (entries.isEmpty) ...[
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
@@ -958,6 +1072,7 @@ class LoansScreen extends StatelessWidget {
                 ] else ...[
                   ...entries.map((loan) => _LoanCard(
                     loan: loan,
+                    onEdit: () => onEditPressed(loan),
                     onDelete: () => onDeletePressed(loan),
                   )),
                   const SizedBox(height: 16),
@@ -996,6 +1111,71 @@ class LoansScreen extends StatelessWidget {
       },
     );
   }
+}
+
+class _LoanAdvisor extends StatefulWidget {
+  const _LoanAdvisor({required this.entries});
+
+  final List<LoanEntry> entries;
+
+  @override
+  State<_LoanAdvisor> createState() => _LoanAdvisorState();
+}
+
+class _LoanAdvisorState extends State<_LoanAdvisor> {
+  final _questionController = TextEditingController();
+  String _answer = 'Ask which loan to review first, total interest, or expected completion.';
+
+  @override
+  void dispose() {
+    _questionController.dispose();
+    super.dispose();
+  }
+
+  void _answerQuestion() {
+    final question = _questionController.text.toLowerCase();
+    final valid = widget.entries
+        .map((loan) => (loan: loan, forecast: loan.calculateAmortization()))
+        .where((item) => item.forecast.isValid)
+        .toList();
+    if (valid.isEmpty) {
+      setState(() => _answer = 'Please correct the loan values before asking for an outcome.');
+      return;
+    }
+    final loan = valid.reduce((a, b) => a.loan.interestRatePerAnnum >= b.loan.interestRatePerAnnum ? a : b);
+    final interest = valid.reduce((a, b) => a.forecast.totalInterestInPaise >= b.forecast.totalInterestInPaise ? a : b);
+    if (question.contains('interest')) {
+      _answer = '${interest.loan.name} has the highest remaining interest: ${_formatCurrency(interest.forecast.totalInterestInPaise)}.';
+    } else if (question.contains('finish') || question.contains('when') || question.contains('completion')) {
+      final completion = loan.forecast.completionDate;
+      _answer = '${loan.loan.name} is expected to finish in ${completion == null ? 'an unavailable date' : DateFormat('MMM yyyy').format(completion)}.';
+    } else {
+      _answer = 'Review ${loan.loan.name} first because it has the highest ROI (${loan.loan.interestRatePerAnnum.toStringAsFixed(2)}%). Check prepayment charges before paying extra.';
+    }
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Ask MoneyMonk', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: TextField(controller: _questionController, decoration: const InputDecoration(hintText: 'Which loan should I review first?'))),
+            const SizedBox(width: 8),
+            IconButton(onPressed: _answerQuestion, icon: const Icon(Icons.send), tooltip: 'Ask'),
+          ]),
+          const SizedBox(height: 10),
+          Text(_answer, style: const TextStyle(color: moneyMonkSecondaryText)),
+        ]),
+      ),
+    );
+  }
+
+  String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0).format(paise / 100);
 }
 
 class _LoanComparison extends StatelessWidget {
@@ -1077,10 +1257,12 @@ class _LoanComparison extends StatelessWidget {
 class _LoanCard extends StatelessWidget {
   const _LoanCard({
     required this.loan,
+    required this.onEdit,
     required this.onDelete,
   });
 
   final LoanEntry loan;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   @override
@@ -1106,6 +1288,10 @@ class _LoanCard extends StatelessWidget {
                 ),
                 PopupMenuButton(
                   itemBuilder: (context) => [
+                    PopupMenuItem(
+                      onTap: onEdit,
+                      child: const Text('Edit'),
+                    ),
                     PopupMenuItem(
                       onTap: onDelete,
                       child: const Text('Delete'),
@@ -1144,6 +1330,7 @@ class _LoanCard extends StatelessWidget {
                   _LoanInfoBox('Outstanding', loan.prettyOutstanding),
                   _LoanInfoBox('Original', loan.prettyOriginal),
                   _LoanInfoBox('EMI/month', loan.prettyEmi),
+                  _LoanInfoBox('Extra EMI', _formatCurrency(loan.extraEmiInPaise)),
                   _LoanInfoBox('Interest Rate', '${loan.interestRatePerAnnum.toStringAsFixed(2)}%'),
                   _LoanInfoBox(
                     'Remaining',
@@ -1369,6 +1556,76 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
+            Row(children: [
+              Expanded(child: DropdownButtonFormField<MoneyEntryType>(
+                initialValue: _types[index],
+                decoration: const InputDecoration(labelText: 'Type'),
+                onChanged: (value) { if (value != null) setState(() => _types[index] = value); },
+                items: const [
+                  DropdownMenuItem(value: MoneyEntryType.income, child: Text('Income')),
+                  DropdownMenuItem(value: MoneyEntryType.expense, child: Text('Expense')),
+                ],
+              )),
+              if (_nameControllers.length > 1) IconButton(
+                onPressed: () => _removeRow(index),
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Remove row',
+              ),
+            ]),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(flex: 3, child: TextFormField(
+                key: index == 0 ? const ValueKey('name-field') : null,
+                controller: _nameControllers[index],
+                decoration: const InputDecoration(labelText: 'Item / description'),
+              )),
+              const SizedBox(width: 10),
+              Expanded(flex: 2, child: TextFormField(
+                key: index == 0 ? const ValueKey('amount-field') : null,
+                controller: _amountControllers[index],
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Amount', prefixText: '₹ '),
+              )),
+            ]),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(child: DropdownButtonFormField<MoneyEntryMode>(
+                initialValue: _modes[index],
+                decoration: const InputDecoration(labelText: 'Schedule'),
+                onChanged: (value) { if (value != null) setState(() => _modes[index] = value); },
+                items: const [
+                  DropdownMenuItem(value: MoneyEntryMode.oneTime, child: Text('One time')),
+                  DropdownMenuItem(value: MoneyEntryMode.recurring, child: Text('Recurring')),
+                ],
+              )),
+              if (isRecurring) ...[
+                const SizedBox(width: 10),
+                Expanded(child: DropdownButtonFormField<RecurrenceFrequency>(
+                  initialValue: _frequencies[index],
+                  decoration: const InputDecoration(labelText: 'Frequency'),
+                  onChanged: (value) { if (value != null) setState(() => _frequencies[index] = value); },
+                  items: const [
+                    DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
+                    DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
+                    DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
+                    DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
+                    DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
+                  ],
+                )),
+              ],
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+    /*
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
             Row(
               children: [
                 Expanded(
@@ -1415,50 +1672,53 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
                 ),
               ],
             ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
+            const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<MoneyEntryMode>(
+                      initialValue: _modes[index],
+                      decoration: const InputDecoration(labelText: 'Schedule'),
+                      onChanged: (value) {
+                        if (value != null) setState(() => _modes[index] = value);
+                      },
+                      items: const [
+                        DropdownMenuItem(value: MoneyEntryMode.oneTime, child: Text('One time')),
+                        DropdownMenuItem(value: MoneyEntryMode.recurring, child: Text('Recurring')),
+                      ],
+                    ),
+                  ),
+                  if (isRecurring) ...[
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: DropdownButtonFormField<MoneyEntryMode>(
-                        initialValue: _modes[index],
-                        decoration: const InputDecoration(labelText: 'Schedule'),
+                      child: DropdownButtonFormField<RecurrenceFrequency>(
+                        initialValue: _frequencies[index],
+                        decoration: const InputDecoration(labelText: 'Frequency'),
                         onChanged: (value) {
-                          if (value != null) setState(() => _modes[index] = value);
+                          if (value != null) setState(() => _frequencies[index] = value);
                         },
                         items: const [
-                          DropdownMenuItem(value: MoneyEntryMode.oneTime, child: Text('One time')),
-                          DropdownMenuItem(value: MoneyEntryMode.recurring, child: Text('Recurring')),
+                          DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
+                          DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
+                          DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
+                          DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
+                          DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
                         ],
                       ),
                     ),
-                    if (isRecurring) ...[
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: DropdownButtonFormField<RecurrenceFrequency>(
-                          initialValue: _frequencies[index],
-                          decoration: const InputDecoration(labelText: 'Frequency'),
-                          onChanged: (value) {
-                            if (value != null) setState(() => _frequencies[index] = value);
-                          },
-                          items: const [
-                            DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
-                            DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
-                            DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
-                            DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
-                            DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
-                          ],
-                        ),
-                      ),
-                    ],
                   ],
-                ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ),
-        );
-      }
+        ),
+      ),
+    );
+  }
   
-      Widget _buildDateSelector(BuildContext context) {
+    */
+
+  Widget _buildDateSelector(BuildContext context) {
         final hasRecurring = _modes.contains(MoneyEntryMode.recurring);
         return InkWell(
           onTap: () => _pickDate(context, recurring: hasRecurring),
@@ -1929,8 +2189,9 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
 }
 
 class AddLoanSheet extends StatefulWidget {
-  const AddLoanSheet({super.key, required this.onSave});
+  const AddLoanSheet({super.key, this.existingLoan, required this.onSave});
 
+  final LoanEntry? existingLoan;
   final void Function(LoanEntry entry) onSave;
 
   @override
@@ -1943,9 +2204,27 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
   final TextEditingController _outstandingAmountController = TextEditingController();
   final TextEditingController _interestRateController = TextEditingController();
   final TextEditingController _emiController = TextEditingController();
+  final TextEditingController _extraEmiController = TextEditingController();
   final TextEditingController _tenureYearsController = TextEditingController(text: '1');
   final TextEditingController _tenureMonthsController = TextEditingController(text: '0');
   DateTime _selectedDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    final loan = widget.existingLoan;
+    if (loan != null) {
+      _nameController.text = loan.name;
+      _originalAmountController.text = (loan.originalAmountInPaise / 100).toString();
+      _outstandingAmountController.text = (loan.outstandingAmountInPaise / 100).toString();
+      _interestRateController.text = loan.interestRatePerAnnum.toString();
+      _emiController.text = (loan.emiInPaise / 100).toString();
+      _extraEmiController.text = (loan.extraEmiInPaise / 100).toString();
+      _tenureYearsController.text = (loan.tenureMonths ~/ 12).toString();
+      _tenureMonthsController.text = (loan.tenureMonths % 12).toString();
+      _selectedDate = loan.startDate;
+    }
+  }
 
   @override
   void dispose() {
@@ -1954,6 +2233,7 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
     _outstandingAmountController.dispose();
     _interestRateController.dispose();
     _emiController.dispose();
+    _extraEmiController.dispose();
     _tenureYearsController.dispose();
     _tenureMonthsController.dispose();
     super.dispose();
@@ -1993,6 +2273,10 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
         double.parse(_emiController.text.trim()) <= 0) {
       return 'Please enter a valid EMI.';
     }
+    final extraEmi = double.tryParse(_extraEmiController.text.trim());
+    if (_extraEmiController.text.trim().isNotEmpty && (extraEmi == null || extraEmi < 0)) {
+      return 'Extra EMI cannot be negative.';
+    }
     final years = int.tryParse(_tenureYearsController.text.trim()) ?? 0;
     final months = int.tryParse(_tenureMonthsController.text.trim()) ?? 0;
     if (years == 0 && months == 0) {
@@ -2014,17 +2298,19 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
     final outstandingAmount = double.parse(_outstandingAmountController.text.trim());
     final interestRate = double.parse(_interestRateController.text.trim());
     final emi = double.parse(_emiController.text.trim());
+    final extraEmi = double.tryParse(_extraEmiController.text.trim()) ?? 0;
     final years = int.tryParse(_tenureYearsController.text.trim()) ?? 0;
     final months = int.tryParse(_tenureMonthsController.text.trim()) ?? 0;
     final tenureMonths = years * 12 + months;
 
     final entry = LoanEntry(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: widget.existingLoan?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
       name: _nameController.text.trim(),
       originalAmountInPaise: (originalAmount * 100).round(),
       outstandingAmountInPaise: (outstandingAmount * 100).round(),
       interestRatePerAnnum: interestRate,
       emiInPaise: (emi * 100).round(),
+      extraEmiInPaise: (extraEmi * 100).round(),
       startDate: _selectedDate,
       tenureMonths: tenureMonths,
     );
@@ -2048,8 +2334,8 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
             children: [
               Row(
                 children: [
-                  const Text(
-                    'Add Loan',
+                  Text(
+                    widget.existingLoan == null ? 'Add Loan' : 'Edit Loan',
                     style: TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w700,
@@ -2112,6 +2398,17 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
                   hintText: '50000',
                   prefixText: '₹ ',
                   helperText: 'Amount paid each month',
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _extraEmiController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: 'Extra EMI (optional)',
+                  hintText: '0',
+                  prefixText: '₹ ',
+                  helperText: 'Additional amount paid every month toward principal',
                 ),
               ),
               const SizedBox(height: 16),
