@@ -536,6 +536,8 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final loans = preferences.getString(loansKey);
       if (!mounted) return;
       setState(() {
+        _moneyEntries.clear();
+        _loanEntries.clear();
         if (money != null) {
           _moneyEntries.addAll((jsonDecode(money) as List).map((item) => MoneyEntry.fromJson(item as Map<String, dynamic>)));
         }
@@ -1084,23 +1086,31 @@ ${loanBreakdown.isEmpty ? "No active loans." : loanBreakdown}
 User Query: $effectiveQuestion''';
 
     try {
-      final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$effectiveKey'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'contents': [
-            {
-              'parts': [
-                {'text': systemPrompt}
-              ]
-            }
-          ]
-        }),
-      );
+      http.Response? response;
+      final modelsToTry = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
 
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      for (final model in modelsToTry) {
+        response = await http.post(
+          Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$effectiveKey'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'contents': [
+              {
+                'parts': [
+                  {'text': systemPrompt}
+                ]
+              }
+            ]
+          }),
+        );
+        if (response.statusCode == 200) {
+          break;
+        }
+      }
+
+      final body = jsonDecode(response?.body ?? '{}') as Map<String, dynamic>;
       
-      if (response.statusCode == 200) {
+      if (response != null && response.statusCode == 200) {
         final candidates = body['candidates'] as List?;
         if (candidates != null && candidates.isNotEmpty) {
           final content = candidates.first['content'] as Map<String, dynamic>?;
@@ -1114,13 +1124,13 @@ User Query: $effectiveQuestion''';
           }
         }
         setState(() => _answer = 'Received empty response from Gemini. Please try again.');
-      } else if (response.statusCode == 429) {
+      } else if (response?.statusCode == 429) {
         setState(() => _answer = '⚠️ Free Tier Rate limit reached (15 requests/min or 1,500/day). Please wait a moment or switch to Paid Tier in AI Settings.');
-      } else if (response.statusCode == 400 || response.statusCode == 403) {
+      } else if (response?.statusCode == 400 || response?.statusCode == 403) {
         final errorMessage = body['error']?['message'] ?? 'Invalid API key or unauthorized request.';
         setState(() => _answer = '⚠️ API Key Error: $errorMessage\nPlease check your key in AI Settings.');
       } else {
-        setState(() => _answer = 'Gemini returned status ${response.statusCode}. Please check your connection or API key.');
+        setState(() => _answer = 'Gemini returned status ${response?.statusCode ?? "unknown"}. Please check your connection or API key.');
       }
     } catch (e) {
       setState(() => _answer = 'Connection error: Could not reach Gemini. Please verify your internet connection and API key.');
@@ -3140,6 +3150,7 @@ class AddLoanSheet extends StatefulWidget {
 }
 
 class _AddLoanSheetState extends State<AddLoanSheet> {
+  final _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _originalAmountController = TextEditingController();
   final TextEditingController _outstandingAmountController = TextEditingController();
@@ -3149,6 +3160,8 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
   final TextEditingController _tenureYearsController = TextEditingController(text: '1');
   final TextEditingController _tenureMonthsController = TextEditingController(text: '0');
   DateTime _selectedDate = DateTime.now();
+  String? _errorMessage;
+  bool _autoValidate = false;
 
   @override
   void initState() {
@@ -3194,44 +3207,45 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
     }
   }
 
-  String? _validate() {
+  String? _validateAll() {
     if (_nameController.text.trim().isEmpty) {
-      return 'Please enter a loan name.';
+      return '⚠️ Please enter a Loan Name (e.g. Home Loan, Car Loan).';
     }
-    if (double.tryParse(_originalAmountController.text.trim()) == null ||
-        double.parse(_originalAmountController.text.trim()) <= 0) {
-      return 'Please enter a valid original amount.';
+    final orig = double.tryParse(_originalAmountController.text.trim());
+    if (orig == null || orig <= 0) {
+      return '⚠️ Please enter a valid Original Loan Amount (must be > 0).';
     }
-    if (double.tryParse(_outstandingAmountController.text.trim()) == null ||
-        double.parse(_outstandingAmountController.text.trim()) <= 0) {
-      return 'Please enter a valid outstanding amount.';
+    final out = double.tryParse(_outstandingAmountController.text.trim());
+    if (out == null || out <= 0) {
+      return '⚠️ Please enter a valid Current Outstanding Amount (must be > 0).';
     }
-    if (double.tryParse(_interestRateController.text.trim()) == null ||
-        double.parse(_interestRateController.text.trim()) < 0) {
-      return 'Please enter a valid interest rate.';
+    final rate = double.tryParse(_interestRateController.text.trim());
+    if (rate == null || rate < 0) {
+      return '⚠️ Please enter a valid Annual Interest Rate % (e.g. 8.5).';
     }
-    if (double.tryParse(_emiController.text.trim()) == null ||
-        double.parse(_emiController.text.trim()) <= 0) {
-      return 'Please enter a valid EMI.';
+    final emi = double.tryParse(_emiController.text.trim());
+    if (emi == null || emi <= 0) {
+      return '⚠️ Please enter a valid Monthly EMI Amount (must be > 0).';
     }
-    final extraEmi = double.tryParse(_extraEmiController.text.trim());
-    if (_extraEmiController.text.trim().isNotEmpty && (extraEmi == null || extraEmi < 0)) {
-      return 'Extra EMI cannot be negative.';
+    final extra = double.tryParse(_extraEmiController.text.trim());
+    if (_extraEmiController.text.trim().isNotEmpty && (extra == null || extra < 0)) {
+      return '⚠️ Extra EMI cannot be negative.';
     }
     final years = int.tryParse(_tenureYearsController.text.trim()) ?? 0;
     final months = int.tryParse(_tenureMonthsController.text.trim()) ?? 0;
-    if (years == 0 && months == 0) {
-      return 'Please enter a valid tenure.';
+    if (years <= 0 && months <= 0) {
+      return '⚠️ Please enter a valid Tenure Duration (at least 1 month or 1 year).';
     }
     return null;
   }
 
   void _save() {
-    final error = _validate();
+    final error = _validateAll();
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error)),
-      );
+      setState(() {
+        _errorMessage = error;
+        _autoValidate = true;
+      });
       return;
     }
 
@@ -3269,163 +3283,279 @@ class _AddLoanSheetState extends State<AddLoanSheet> {
       child: SingleChildScrollView(
         child: Container(
           padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    widget.existingLoan == null ? 'Add Loan' : 'Edit Loan',
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Loan name',
-                  hintText: 'Home Loan',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _originalAmountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Original loan amount',
-                  hintText: '₹50,00,000',
-                  prefixText: '₹ ',
-                  helperText: 'Amount originally borrowed',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _outstandingAmountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Current outstanding amount',
-                  hintText: '₹40,00,000',
-                  prefixText: '₹ ',
-                  helperText: 'Principal still owed today',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _interestRateController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Interest rate / ROI',
-                  hintText: '6.5',
-                  suffixText: '%',
-                  helperText: 'Annual interest rate',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _emiController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'EMI',
-                  hintText: '50000',
-                  prefixText: '₹ ',
-                  helperText: 'Amount paid each month',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _extraEmiController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Extra EMI (optional)',
-                  hintText: '0',
-                  prefixText: '₹ ',
-                  helperText: 'Additional amount paid every month toward principal',
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _tenureYearsController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: 'Years',
-                        hintText: '20',
+          child: Form(
+            key: _formKey,
+            autovalidateMode: _autoValidate ? AutovalidateMode.onUserInteraction : AutovalidateMode.disabled,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      widget.existingLoan == null ? 'Add Loan' : 'Edit Loan',
+                      style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w700,
+                        color: moneyMonkPrimaryText,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _tenureMonthsController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: 'Months',
-                        hintText: '0',
-                      ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Prominent Error Banner
+                if (_errorMessage != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      border: Border.all(color: moneyMonkError),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.error_outline, color: moneyMonkError, size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: const TextStyle(
+                              color: moneyMonkError,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
+                  const SizedBox(height: 16),
                 ],
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Loan tenure / duration',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: moneyMonkSecondaryText,
-                ),
-              ),
-              const SizedBox(height: 16),
-              InkWell(
-                onTap: () => _pickDate(context),
-                child: InputDecorator(
+
+                // Loan Name
+                TextFormField(
+                  controller: _nameController,
                   decoration: const InputDecoration(
-                    labelText: 'Loan start date',
+                    labelText: 'Loan Name *',
+                    hintText: 'Home Loan, Car Loan, Personal Loan',
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(DateFormat('dd MMM yyyy').format(_selectedDate)),
-                      const Icon(Icons.calendar_today_outlined, size: 18),
-                    ],
-                  )
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Loan name is required' : null,
+                  onChanged: (_) {
+                    if (_errorMessage != null) setState(() => _errorMessage = null);
+                  },
                 ),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  onPressed: _save,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: moneyMonkNavy,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    textStyle: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                const SizedBox(height: 16),
+
+                // Original Loan Amount
+                TextFormField(
+                  controller: _originalAmountController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Original Loan Amount *',
+                    hintText: '5000000',
+                    prefixText: '₹ ',
+                    helperText: 'Amount originally sanctioned or borrowed',
+                  ),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Original amount is required';
+                    final n = double.tryParse(v.trim());
+                    if (n == null || n <= 0) return 'Must be a valid amount > 0';
+                    return null;
+                  },
+                  onChanged: (_) {
+                    if (_errorMessage != null) setState(() => _errorMessage = null);
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Outstanding Principal
+                TextFormField(
+                  controller: _outstandingAmountController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Current Outstanding Balance *',
+                    hintText: '4000000',
+                    prefixText: '₹ ',
+                    helperText: 'Principal balance still owed today',
+                  ),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Outstanding balance is required';
+                    final n = double.tryParse(v.trim());
+                    if (n == null || n <= 0) return 'Must be a valid amount > 0';
+                    return null;
+                  },
+                  onChanged: (_) {
+                    if (_errorMessage != null) setState(() => _errorMessage = null);
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Interest Rate
+                TextFormField(
+                  controller: _interestRateController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Interest Rate (Annual ROI) *',
+                    hintText: '8.5',
+                    suffixText: '% p.a.',
+                    helperText: 'Annual percentage rate (e.g. 8.5 for 8.5%)',
+                  ),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Interest rate is required';
+                    final n = double.tryParse(v.trim());
+                    if (n == null || n < 0) return 'Must be a valid rate >= 0%';
+                    return null;
+                  },
+                  onChanged: (_) {
+                    if (_errorMessage != null) setState(() => _errorMessage = null);
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Monthly EMI
+                TextFormField(
+                  controller: _emiController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Monthly EMI *',
+                    hintText: '35000',
+                    prefixText: '₹ ',
+                    helperText: 'Regular monthly EMI deduction',
+                  ),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Monthly EMI is required';
+                    final n = double.tryParse(v.trim());
+                    if (n == null || n <= 0) return 'Must be a valid EMI > 0';
+                    return null;
+                  },
+                  onChanged: (_) {
+                    if (_errorMessage != null) setState(() => _errorMessage = null);
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Extra Prepayment EMI (Optional)
+                TextFormField(
+                  controller: _extraEmiController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Extra Prepayment EMI (Optional)',
+                    hintText: '0',
+                    prefixText: '₹ ',
+                    helperText: 'Optional extra prepayment amount per month toward principal',
+                  ),
+                  validator: (v) {
+                    if (v != null && v.trim().isNotEmpty) {
+                      final n = double.tryParse(v.trim());
+                      if (n == null || n < 0) return 'Extra EMI cannot be negative';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Tenure Years and Months
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _tenureYearsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Tenure (Years) *',
+                          hintText: '15',
+                        ),
+                        validator: (v) {
+                          final years = int.tryParse(_tenureYearsController.text.trim()) ?? 0;
+                          final months = int.tryParse(_tenureMonthsController.text.trim()) ?? 0;
+                          if (years <= 0 && months <= 0) return 'Required';
+                          return null;
+                        },
+                        onChanged: (_) {
+                          if (_errorMessage != null) setState(() => _errorMessage = null);
+                        },
+                      ),
                     ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _tenureMonthsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Months',
+                          hintText: '0',
+                        ),
+                        onChanged: (_) {
+                          if (_errorMessage != null) setState(() => _errorMessage = null);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Remaining or total loan duration',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: moneyMonkSecondaryText,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Loan Start Date
+                InkWell(
+                  onTap: () => _pickDate(context),
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Loan Start Date',
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(DateFormat('dd MMM yyyy').format(_selectedDate), style: const TextStyle(fontWeight: FontWeight.w600)),
+                        const Icon(Icons.calendar_today_outlined, size: 18),
+                      ],
                     ),
                   ),
-                  child: const Text('Save Loan'),
                 ),
-              ),
-            ],
+                const SizedBox(height: 24),
+
+                // Save Button
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.check),
+                    label: const Text('Save Loan'),
+                    onPressed: _save,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: moneyMonkNavy,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      textStyle: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 }
+
