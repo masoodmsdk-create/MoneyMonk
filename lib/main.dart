@@ -345,9 +345,9 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => AddMoneySheet(
-        onSave: (MoneyEntry entry) {
+        onSave: (List<MoneyEntry> entries) {
           setState(() {
-            _moneyEntries.add(entry);
+            _moneyEntries.addAll(entries);
           });
         },
       ),
@@ -363,6 +363,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
       builder: (context) => EditMoneySheet(
         entry: entry,
+        selectedMonth: _selectedMonth,
         onSave: (MoneyEntry updated) {
           setState(() {
             final index = _moneyEntries.indexWhere((e) => e.id == entry.id);
@@ -869,88 +870,44 @@ class _MoneyColumn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: tint,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: moneyMonkBorder),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: accent,
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (entries.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 8, bottom: 8),
-              child: Text(
-                '₹0',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: accent,
-                ),
-              ),
-            )
-          else
-            ...entries.map(
-              (entry) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: accent)),
+            Text(_formatCurrency(entries.fold(0, (sum, entry) => sum + entry.amountInPaise)), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (entries.isEmpty)
+          Text('No ${label.toLowerCase()} entries', style: const TextStyle(fontSize: 13, color: moneyMonkMuted))
+        else
+          ...entries.map((entry) => Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: tint, borderRadius: BorderRadius.circular(8)),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            entry.name,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: moneyMonkPrimaryText,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            entry.prettyAmount,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: accent,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    Expanded(child: Text(entry.name, overflow: TextOverflow.ellipsis)),
+                    Text(entry.prettyAmount, style: TextStyle(fontWeight: FontWeight.w600, color: accent)),
                     PopupMenuButton(
                       itemBuilder: (context) => [
-                        PopupMenuItem(
-                          child: const Text('Edit'),
-                          onTap: () => onEdit(entry),
-                        ),
-                        PopupMenuItem(
-                          child: const Text('Delete'),
-                          onTap: () => onDelete(entry),
-                        ),
+                        PopupMenuItem(onTap: () => onEdit(entry), child: const Text('Edit')),
+                        PopupMenuItem(onTap: () => onDelete(entry), child: const Text('Delete')),
                       ],
                     ),
                   ],
                 ),
-              ),
-            ),
-        ],
-      ),
+              )),
+      ],
     );
+  }
+
+  static String _formatCurrency(int paise) {
+    final rupee = paise / 100;
+    return NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: paise % 100 == 0 ? 0 : 2).format(rupee);
   }
 }
 
@@ -1004,6 +961,10 @@ class LoansScreen extends StatelessWidget {
                     onDelete: () => onDeletePressed(loan),
                   )),
                   const SizedBox(height: 16),
+                  if (entries.length > 1) ...[
+                    _LoanComparison(entries: entries),
+                    const SizedBox(height: 16),
+                  ],
                 ],
                 Semantics(
                   label: 'Add loan',
@@ -1033,6 +994,82 @@ class LoansScreen extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _LoanComparison extends StatelessWidget {
+  const _LoanComparison({required this.entries});
+
+  final List<LoanEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final validLoans = entries
+        .map((loan) => (loan: loan, amortization: loan.calculateAmortization()))
+        .where((item) => item.amortization.isValid)
+        .toList();
+
+    if (validLoans.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final highestRate = validLoans.reduce(
+      (a, b) => a.loan.interestRatePerAnnum >= b.loan.interestRatePerAnnum ? a : b,
+    );
+    final highestInterest = validLoans.reduce(
+      (a, b) => a.amortization.totalInterestInPaise >= b.amortization.totalInterestInPaise ? a : b,
+    );
+    final currency = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Loan comparison',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
+        ),
+        const SizedBox(height: 10),
+        Card(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columnSpacing: 18,
+              columns: const [
+                DataColumn(label: Text('Loan')),
+                DataColumn(label: Text('Outstanding')),
+                DataColumn(label: Text('EMI')),
+                DataColumn(label: Text('ROI')),
+                DataColumn(label: Text('Months left')),
+                DataColumn(label: Text('Interest left')),
+              ],
+              rows: validLoans.map((item) => DataRow(cells: [
+                DataCell(Text(item.loan.name)),
+                DataCell(Text(currency.format(item.loan.outstandingAmountInPaise / 100))),
+                DataCell(Text(currency.format(item.loan.emiInPaise / 100))),
+                DataCell(Text('${item.loan.interestRatePerAnnum.toStringAsFixed(2)}%')),
+                DataCell(Text('${item.amortization.remainingMonths}')),
+                DataCell(Text(currency.format(item.amortization.totalInterestInPaise / 100))),
+              ])).toList(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Next step: ${highestRate.loan.name} has the highest interest rate '
+              '(${highestRate.loan.interestRatePerAnnum.toStringAsFixed(2)}%). '
+              'It may be the first loan to review. ${highestInterest.loan.name} '
+              'has the highest remaining interest cost '
+              '(${currency.format(highestInterest.amortization.totalInterestInPaise / 100)}). '
+              'Check prepayment charges or restrictions before paying extra.',
+              style: const TextStyle(fontSize: 14, height: 1.4, color: moneyMonkPrimaryText),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1221,26 +1258,53 @@ class _LoanInfoBox extends StatelessWidget {
 class AddMoneySheet extends StatefulWidget {
   const AddMoneySheet({super.key, required this.onSave});
 
-  final void Function(MoneyEntry entry) onSave;
+  final void Function(List<MoneyEntry> entries) onSave;
 
   @override
   State<AddMoneySheet> createState() => _AddMoneySheetState();
 }
 
 class _AddMoneySheetState extends State<AddMoneySheet> {
-  MoneyEntryType _type = MoneyEntryType.income;
-  MoneyEntryMode _mode = MoneyEntryMode.oneTime;
-  RecurrenceFrequency _frequency = RecurrenceFrequency.monthly;
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _amountController = TextEditingController();
+  final List<TextEditingController> _nameControllers = [TextEditingController()];
+  final List<TextEditingController> _amountControllers = [TextEditingController()];
+  final List<MoneyEntryType> _types = [MoneyEntryType.income];
+  final List<MoneyEntryMode> _modes = [MoneyEntryMode.oneTime];
+  final List<RecurrenceFrequency> _frequencies = [RecurrenceFrequency.monthly];
   DateTime _selectedDate = DateTime.now();
   DateTime _selectedRecurringStartDate = DateTime.now();
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _amountController.dispose();
+    for (final controller in _nameControllers) {
+      controller.dispose();
+    }
+    for (final controller in _amountControllers) {
+      controller.dispose();
+    }
     super.dispose();
+  }
+
+  void _addRow() {
+    setState(() {
+      _nameControllers.add(TextEditingController());
+      _amountControllers.add(TextEditingController());
+      _types.add(MoneyEntryType.income);
+      _modes.add(MoneyEntryMode.oneTime);
+      _frequencies.add(RecurrenceFrequency.monthly);
+    });
+  }
+
+  void _removeRow(int index) {
+    if (_nameControllers.length == 1) {
+      return;
+    }
+    setState(() {
+      _nameControllers.removeAt(index).dispose();
+      _amountControllers.removeAt(index).dispose();
+      _types.removeAt(index);
+      _modes.removeAt(index);
+      _frequencies.removeAt(index);
+    });
   }
 
   Future<void> _pickDate(BuildContext context, {required bool recurring}) async {
@@ -1265,52 +1329,327 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
     });
   }
 
-  String? _validateName() {
-    final value = _nameController.text.trim();
-    if (value.isEmpty) {
-      return 'Please enter a name.';
-    }
-    return null;
-  }
-
-  String? _validateAmount() {
-    final value = _amountController.text.trim();
-    if (value.isEmpty) {
-      return 'Please enter a valid amount.';
-    }
-    final parsed = double.tryParse(value);
-    if (parsed == null || parsed <= 0) {
-      return 'Please enter a valid amount.';
-    }
-    return null;
-  }
-
   void _save() {
-    final nameError = _validateName();
-    final amountError = _validateAmount();
-    if (nameError != null || amountError != null) {
-      final message = nameError ?? amountError ?? 'Please enter valid details.';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-      return;
+    final entries = <MoneyEntry>[];
+    for (var index = 0; index < _nameControllers.length; index++) {
+      final name = _nameControllers[index].text.trim();
+      final amount = double.tryParse(_amountControllers[index].text.trim());
+      if (name.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Please enter a name for row ${index + 1}.')),
+        );
+        return;
+      }
+      if (amount == null || amount <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Please enter a valid amount for row ${index + 1}.')),
+        );
+        return;
+      }
+      entries.add(MoneyEntry(
+        id: '${DateTime.now().microsecondsSinceEpoch}-$index',
+        name: name,
+        type: _types[index],
+        amountInPaise: (amount * 100).round(),
+        mode: _modes[index],
+        date: _modes[index] == MoneyEntryMode.oneTime ? _selectedDate : _selectedRecurringStartDate,
+        frequency: _modes[index] == MoneyEntryMode.recurring ? _frequencies[index] : null,
+      ));
     }
 
-    final amount = double.parse(_amountController.text.trim());
-    final amountInPaise = (amount * 100).round();
-
-    final entry = MoneyEntry(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: _nameController.text.trim(),
-      type: _type,
-      amountInPaise: amountInPaise,
-      mode: _mode,
-      date: _mode == MoneyEntryMode.oneTime ? _selectedDate : _selectedRecurringStartDate,
-      frequency: _mode == MoneyEntryMode.recurring ? _frequency : null,
-    );
-
-    widget.onSave(entry);
+    widget.onSave(entries);
     Navigator.of(context).pop();
+  }
+
+  Widget _buildEntryRow(int index) {
+    final isRecurring = _modes[index] == MoneyEntryMode.recurring;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<MoneyEntryType>(
+                    initialValue: _types[index],
+                    decoration: const InputDecoration(labelText: 'Type'),
+                    onChanged: (value) {
+                      if (value != null) setState(() => _types[index] = value);
+                    },
+                    items: const [
+                      DropdownMenuItem(value: MoneyEntryType.income, child: Text('Income')),
+                      DropdownMenuItem(value: MoneyEntryType.expense, child: Text('Expense')),
+                    ],
+                  ),
+                ),
+                if (_nameControllers.length > 1)
+                  IconButton(
+                    onPressed: () => _removeRow(index),
+                    icon: const Icon(Icons.delete_outline),
+                    tooltip: 'Remove row',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: TextFormField(
+                    key: index == 0 ? const ValueKey('name-field') : null,
+                    controller: _nameControllers[index],
+                    decoration: const InputDecoration(labelText: 'Item / description', hintText: 'Salary or Rent'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: TextFormField(
+                    key: index == 0 ? const ValueKey('amount-field') : null,
+                    controller: _amountControllers[index],
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Amount', prefixText: '₹ '),
+                  ),
+                ),
+              ],
+            ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<MoneyEntryMode>(
+                        initialValue: _modes[index],
+                        decoration: const InputDecoration(labelText: 'Schedule'),
+                        onChanged: (value) {
+                          if (value != null) setState(() => _modes[index] = value);
+                        },
+                        items: const [
+                          DropdownMenuItem(value: MoneyEntryMode.oneTime, child: Text('One time')),
+                          DropdownMenuItem(value: MoneyEntryMode.recurring, child: Text('Recurring')),
+                        ],
+                      ),
+                    ),
+                    if (isRecurring) ...[
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: DropdownButtonFormField<RecurrenceFrequency>(
+                          initialValue: _frequencies[index],
+                          decoration: const InputDecoration(labelText: 'Frequency'),
+                          onChanged: (value) {
+                            if (value != null) setState(() => _frequencies[index] = value);
+                          },
+                          items: const [
+                            DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
+                            DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
+                            DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
+                            DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
+                            DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+  
+      Widget _buildDateSelector(BuildContext context) {
+        final hasRecurring = _modes.contains(MoneyEntryMode.recurring);
+        return InkWell(
+          onTap: () => _pickDate(context, recurring: hasRecurring),
+          child: InputDecorator(
+            decoration: InputDecoration(labelText: hasRecurring ? 'Recurring start date' : 'Date'),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(DateFormat('dd MMM yyyy').format(hasRecurring ? _selectedRecurringStartDate : _selectedDate)),
+                const Icon(Icons.calendar_today_outlined, size: 18),
+              ],
+            ),
+          ),
+        );
+      }
+  
+      @override
+      Widget build(BuildContext context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: SingleChildScrollView(
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        'Add Money',
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Add multiple rows',
+                    key: ValueKey('income-option'),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
+                  ),
+                  const SizedBox(height: 8),
+                  ...List.generate(_nameControllers.length, (index) => _buildEntryRow(index)),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _addRow,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add another row'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _buildDateSelector(context),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _save,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: moneyMonkNavy,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        textStyle: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text('Save'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+    }
+    /*
+            initialValue: _types[index],
+                    decoration: const InputDecoration(labelText: 'Type'),
+                    onChanged: (value) {
+                      if (value != null) setState(() => _types[index] = value);
+                    },
+                    items: const [
+                      DropdownMenuItem(value: MoneyEntryType.income, child: Text('Income')),
+                      DropdownMenuItem(value: MoneyEntryType.expense, child: Text('Expense')),
+                    ],
+                  ),
+                ),
+                if (_nameControllers.length > 1)
+                  IconButton(
+                    onPressed: () => _removeRow(index),
+                    icon: const Icon(Icons.delete_outline),
+                    tooltip: 'Remove row',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: TextFormField(
+                    key: index == 0 ? const ValueKey('name-field') : null,
+                    controller: _nameControllers[index],
+                    decoration: const InputDecoration(labelText: 'Item / description', hintText: 'Salary or Rent'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: TextFormField(
+                    key: index == 0 ? const ValueKey('amount-field') : null,
+                    controller: _amountControllers[index],
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Amount', prefixText: '₹ '),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<MoneyEntryMode>(
+                    initialValue: _modes[index],
+                    decoration: const InputDecoration(labelText: 'Schedule'),
+                    onChanged: (value) {
+                      if (value != null) setState(() => _modes[index] = value);
+                    },
+                    items: const [
+                      DropdownMenuItem(value: MoneyEntryMode.oneTime, child: Text('One time')),
+                      DropdownMenuItem(value: MoneyEntryMode.recurring, child: Text('Recurring')),
+                    ],
+                  ),
+                ),
+                if (isRecurring) ...[
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: DropdownButtonFormField<RecurrenceFrequency>(
+                      initialValue: _frequencies[index],
+                      decoration: const InputDecoration(labelText: 'Frequency'),
+                      onChanged: (value) {
+                        if (value != null) setState(() => _frequencies[index] = value);
+                      },
+                      items: const [
+                        DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
+                        DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
+                        DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
+                        DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
+                        DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDateSelector(BuildContext context) {
+    final hasRecurring = _modes.contains(MoneyEntryMode.recurring);
+    return InkWell(
+      onTap: () => _pickDate(context, recurring: hasRecurring),
+      child: InputDecorator(
+        decoration: InputDecoration(labelText: hasRecurring ? 'Recurring start date' : 'Date'),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(DateFormat('dd MMM yyyy').format(hasRecurring ? _selectedRecurringStartDate : _selectedDate)),
+            const Icon(Icons.calendar_today_outlined, size: 18),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1343,163 +1682,19 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
                 ],
               ),
               const SizedBox(height: 18),
-              const Text(
-                'Type',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: moneyMonkSecondaryText,
+              const Text('Add multiple rows', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+              const SizedBox(height: 8),
+              ...List.generate(_nameControllers.length, (index) => _buildEntryRow(index)),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _addRow,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add another row'),
                 ),
               ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: ChoiceChip(
-                      key: const ValueKey('income-option'),
-                      label: const Text('Income'),
-                      selected: _type == MoneyEntryType.income,
-                      onSelected: (_) => setState(() => _type = MoneyEntryType.income),
-                      selectedColor: moneyMonkNavyLight,
-                      labelStyle: TextStyle(
-                        color: _type == MoneyEntryType.income ? moneyMonkNavy : moneyMonkPrimaryText,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ChoiceChip(
-                      label: const Text('Expense'),
-                      selected: _type == MoneyEntryType.expense,
-                      onSelected: (_) => setState(() => _type = MoneyEntryType.expense),
-                      selectedColor: const Color(0xFFFEF0EA),
-                      labelStyle: TextStyle(
-                        color: _type == MoneyEntryType.expense ? moneyMonkExpense : moneyMonkPrimaryText,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              TextFormField(
-                key: const ValueKey('name-field'),
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Name',
-                  hintText: 'Salary',
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                key: const ValueKey('amount-field'),
-                controller: _amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Amount',
-                  hintText: '₹0.00',
-                  prefixText: '₹ ',
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'When',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: moneyMonkSecondaryText,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: ChoiceChip(
-                      label: const Text('One time'),
-                      selected: _mode == MoneyEntryMode.oneTime,
-                      onSelected: (_) => setState(() => _mode = MoneyEntryMode.oneTime),
-                      selectedColor: moneyMonkNavyLight,
-                      labelStyle: TextStyle(
-                        color: _mode == MoneyEntryMode.oneTime ? moneyMonkNavy : moneyMonkPrimaryText,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ChoiceChip(
-                      label: const Text('Recurring'),
-                      selected: _mode == MoneyEntryMode.recurring,
-                      onSelected: (_) => setState(() => _mode = MoneyEntryMode.recurring),
-                      selectedColor: moneyMonkNavyLight,
-                      labelStyle: TextStyle(
-                        color: _mode == MoneyEntryMode.recurring ? moneyMonkNavy : moneyMonkPrimaryText,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              if (_mode == MoneyEntryMode.oneTime)
-                InkWell(
-                  onTap: () => _pickDate(context, recurring: false),
-                  child: InputDecorator(
-                    decoration: const InputDecoration(
-                      labelText: 'Date',
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(DateFormat('dd MMM yyyy').format(_selectedDate)),
-                        const Icon(Icons.calendar_today_outlined, size: 18),
-                      ],
-                    )
-                  ),
-                )
-              else ...[
-                const Text(
-                  'Frequency',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: moneyMonkSecondaryText,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<RecurrenceFrequency>(
-                  initialValue: _frequency,
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => _frequency = value);
-                    }
-                  },
-                  items: const [
-                    DropdownMenuItem(value: RecurrenceFrequency.monthly, child: Text('Monthly')),
-                    DropdownMenuItem(value: RecurrenceFrequency.everyTwoMonths, child: Text('Every 2 months')),
-                    DropdownMenuItem(value: RecurrenceFrequency.quarterly, child: Text('Quarterly')),
-                    DropdownMenuItem(value: RecurrenceFrequency.halfYearly, child: Text('Half-yearly')),
-                    DropdownMenuItem(value: RecurrenceFrequency.yearly, child: Text('Yearly')),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                InkWell(
-                  onTap: () => _pickDate(context, recurring: true),
-                  child: InputDecorator(
-                    decoration: const InputDecoration(
-                      labelText: 'Start date',
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(DateFormat('dd MMM yyyy').format(_selectedRecurringStartDate)),
-                        const Icon(Icons.calendar_today_outlined, size: 18),
-                      ],
-                    )
-                  ),
-                ),
-              ],
+              const SizedBox(height: 8),
+              _buildDateSelector(context),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -1525,13 +1720,19 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
         ),
       ),
     );
-  }
-}
+      }
+    */
 
 class EditMoneySheet extends StatefulWidget {
-  const EditMoneySheet({super.key, required this.entry, required this.onSave});
+  const EditMoneySheet({
+    super.key,
+    required this.entry,
+    required this.selectedMonth,
+    required this.onSave,
+  });
 
   final MoneyEntry entry;
+  final DateTime selectedMonth;
   final void Function(MoneyEntry entry) onSave;
 
   @override
@@ -1592,6 +1793,12 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
     final amount = double.parse(_amountController.text.trim());
     final amountInPaise = (amount * 100).round();
 
+    final monthKey = DateTime(widget.selectedMonth.year, widget.selectedMonth.month);
+    final overrides = Map<DateTime, int>.from(widget.entry.overrides);
+    if (widget.entry.mode == MoneyEntryMode.recurring) {
+      overrides[monthKey] = amountInPaise;
+    }
+
     final updated = MoneyEntry(
       id: widget.entry.id,
       name: _nameController.text.trim(),
@@ -1600,7 +1807,7 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
       mode: widget.entry.mode,
       date: widget.entry.date,
       frequency: widget.entry.frequency,
-      overrides: widget.entry.overrides,
+      overrides: overrides,
     );
 
     widget.onSave(updated);

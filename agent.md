@@ -1474,3 +1474,29 @@ When tempted to make the UI more sophisticated:
 Prefer clarity over decoration.
 
 The product should feel so straightforward that a first-time user can open it and immediately know what to do.
+
+41. Spreadsheet-Style Money Input
+
+The Add Money experience should support entering multiple money items in one batch using a simple table-like grid.
+
+Each editable row represents one item and should provide:
+
+- Type: Income or Expense
+- Item/description
+- Amount in Indian rupees
+- Schedule: One time or Recurring
+- Frequency for recurring rows: Monthly, Every 2 months, Quarterly, Half-yearly, or Yearly
+
+The user must be able to mix income and expense rows in the same batch, for example:
+
+| Type | Item/description | Amount | Schedule | Frequency |
+|---|---|---:|---|---|
+| Income | Salary | ₹80,000 | Recurring | Monthly |
+| Expense | Rent | ₹20,000 | Recurring | Monthly |
+| Expense | Insurance | ₹15,000 | One time | |
+
+Provide Add another row and Remove row actions, then save all valid rows together. Do not require the user to open separate Income and Expense forms or manually repeat the save flow.
+
+The saved Money screen must continue to show the conceptual table as Income | Amount | Expense | Amount, with independent sides and totals below. On narrow screens, reflow the input rows vertically while keeping Type, description, amount, schedule, and frequency clear and usable.
+
+Dates may use a sensible shared date control for a batch to keep the flow simple. Recurring entries must still auto-populate applicable future months, and editing a recurring occurrence must create a month-specific override without changing its future default.
