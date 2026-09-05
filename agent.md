@@ -1582,19 +1582,21 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Field-Level Indicators**: Every mandatory field is marked with an asterisk `*` and provides inline red border and error text feedback on interaction.
 - **Safe Parsing**: All numeric inputs (currency, ROI %, EMI, duration) use `double.tryParse` / `int.tryParse` with sanity bounds checks (> 0, non-negative) to prevent runtime crashes.
 
-48. Multi-User Platform Architecture & Account Switching Contract
+48. Streamlined Multi-User Architecture & Account Switching Contract
 
 - **User Accounts Registry**:
   - Registered user accounts on the device are persisted in `moneymonk_users` as a JSON map `{ username: sha256_hash }`.
   - All usernames are lowercased and trimmed.
   - The login screen automatically detects registered accounts on the device and presents quick-selection account chips for 1-tap username prefill.
-- **User Management Hub (`UserManagementSheet`)**:
+  - Sign-up and account creation occur exclusively on the outside Login/Sign-up page.
+- **Streamlined User Management Hub (`UserManagementSheet`)**:
   - Accessible from the app's top bar via the user's avatar chip (displaying the user's initial and name).
   - Displays the active account badge, entry counts, and loan counts.
   - Lists all other saved user accounts on this device with a 1-tap **"Switch"** action that swaps sessions cleanly.
-  - Offers a **"Register Another Account"** shortcut to onboard new users to the device.
-  - Offers a **"Backup & Export My Data"** option that generates a clean JSON snapshot of all income, expense, and loan entries.
+  - Clean and clutter-free: No in-app registration shortcut and no backup/export prompts.
   - Offers a **"Sign Out"** button to return to the authentication screen.
+- **Permanent Per-User Persistence Guarantee**:
+  - Data saved by any user under `moneymonk_money_$username` and `moneymonk_loans_$username` is permanently preserved and isolated. Switching users or signing out never alters or deletes saved records.
 
 49. Dynamic Date Initialization & All-Transactions Multi-View Mode
 
