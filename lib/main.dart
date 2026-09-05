@@ -1099,63 +1099,6 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
     });
   }
 
-  void _exportUserData(BuildContext context) {
-    final exportData = {
-      'moneymonk_version': '1.0',
-      'username': widget.username,
-      'exported_at': DateTime.now().toIso8601String(),
-      'money_entries': _moneyEntries.map((e) => e.toJson()).toList(),
-      'loans': _loanEntries.map((l) => l.toJson()).toList(),
-    };
-    final jsonStr = const JsonEncoder.withIndent('  ').convert(exportData);
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            const Icon(Icons.download_outlined, color: moneyMonkNavy),
-            const SizedBox(width: 8),
-            Text('Backup Data (${widget.username})'),
-          ],
-        ),
-        content: SizedBox(
-          width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Here is your full data backup in JSON format. You can copy it for safekeeping:',
-                style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                height: 220,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: moneyMonkBackground,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: moneyMonkBorder),
-                ),
-                child: SelectableText(
-                  jsonStr,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _showUserManagementSheet(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
@@ -1183,10 +1126,6 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           onSignOut: () {
             Navigator.pop(sheetContext);
             _signOut();
-          },
-          onExportData: () {
-            Navigator.pop(sheetContext);
-            _exportUserData(context);
           },
         );
       },
@@ -1356,7 +1295,6 @@ class _UserManagementSheetContent extends StatefulWidget {
     required this.loansCount,
     required this.onSwitchUser,
     required this.onSignOut,
-    required this.onExportData,
   });
 
   final String currentUsername;
@@ -1364,7 +1302,6 @@ class _UserManagementSheetContent extends StatefulWidget {
   final int loansCount;
   final ValueChanged<String> onSwitchUser;
   final VoidCallback onSignOut;
-  final VoidCallback onExportData;
 
   @override
   State<_UserManagementSheetContent> createState() => _UserManagementSheetContentState();
@@ -1539,26 +1476,8 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
 
             const SizedBox(height: 16),
             const Divider(),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
 
-            // Actions: Add New Account, Export & Sign Out
-            ListTile(
-              leading: const Icon(Icons.person_add_outlined, color: moneyMonkNavy),
-              title: const Text('Register Another Account', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Create a new isolated profile on this device', style: TextStyle(fontSize: 11)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                Navigator.pop(context);
-                widget.onSignOut();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined, color: moneyMonkNavy),
-              title: const Text('Backup & Export My Data', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Download or copy JSON records for safekeeping', style: TextStyle(fontSize: 11)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: widget.onExportData,
-            ),
             ListTile(
               leading: const Icon(Icons.logout, color: moneyMonkError),
               title: const Text('Sign Out', style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkError)),

@@ -107,7 +107,6 @@ void main() {
 
     expect(find.text('Account & Users'), findsOneWidget);
     expect(find.text('Active Account'), findsOneWidget);
-    expect(find.text('Backup & Export My Data'), findsOneWidget);
     expect(find.text('Sign Out'), findsOneWidget);
   });
 }
