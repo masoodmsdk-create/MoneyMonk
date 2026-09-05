@@ -1582,3 +1582,48 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Field-Level Indicators**: Every mandatory field is marked with an asterisk `*` and provides inline red border and error text feedback on interaction.
 - **Safe Parsing**: All numeric inputs (currency, ROI %, EMI, duration) use `double.tryParse` / `int.tryParse` with sanity bounds checks (> 0, non-negative) to prevent runtime crashes.
 
+48. Multi-User Platform Architecture & Account Switching Contract
+
+- **User Accounts Registry**:
+  - Registered user accounts on the device are persisted in `moneymonk_users` as a JSON map `{ username: sha256_hash }`.
+  - All usernames are lowercased and trimmed.
+  - The login screen automatically detects registered accounts on the device and presents quick-selection account chips for 1-tap username prefill.
+- **User Management Hub (`UserManagementSheet`)**:
+  - Accessible from the app's top bar via the user's avatar chip (displaying the user's initial and name).
+  - Displays the active account badge, entry counts, and loan counts.
+  - Lists all other saved user accounts on this device with a 1-tap **"Switch"** action that swaps sessions cleanly.
+  - Offers a **"Register Another Account"** shortcut to onboard new users to the device.
+  - Offers a **"Backup & Export My Data"** option that generates a clean JSON snapshot of all income, expense, and loan entries.
+  - Offers a **"Sign Out"** button to return to the authentication screen.
+
+49. Dynamic Date Initialization & All-Transactions Multi-View Mode
+
+- **Dynamic Month Default**:
+  - `_selectedMonth` initializes dynamically to `DateTime(DateTime.now().year, DateTime.now().month)` rather than a fixed date.
+  - Adding new money entries defaults the entry date to the active viewing month, preventing unexpected date-filter mismatches.
+- **All-Transactions View**:
+  - `MoneyScreen` provides a 3-way toggle: `[ Monthly ] [ Yearly ] [ All ]`.
+  - In `All` view mode, the app lists every transaction ever recorded across all dates and years in chronological order (newest first).
+  - Shows total all-time income, total all-time expenses, and cumulative net balance.
+  - Provides direct in-list edit and delete options for each transaction.
+
+50. Resilient Per-Item Data Deserialization & Storage Verification
+
+- **Resilient Parsing**:
+  - Deserialization in `MoneyEntry.fromJson` and `LoanEntry.fromJson` defends against numeric type variations (`num?`, `toInt()`, `toDouble()`), null dates, and enum string variations.
+  - `_loadSavedData()` deserializes entries inside individual try-catch blocks so a corrupted item cannot blank out other valid saved records.
+  - `_saveData()` explicitly awaits `preferences.setString()` and logs confirmation.
+  - All modifying operations (`_handleAddMoney`, `_handleEditMoney`, `_handleDeleteMoney`, `_handleAddLoan`, `_handleEditLoan`, `_handleDeleteLoan`) display instant `SnackBar` feedback to guarantee user confidence.
+
+51. Financial Health Scorecard & Metric Formulations
+
+- **Savings Rate**:
+  - Formula: `(Monthly Income - Monthly Expense) / Monthly Income * 100%`.
+  - Rating: `≥ 20%` (Strong, Green), `10% - 20%` (Moderate, Amber), `< 10%` (Needs Attention, Red).
+- **Debt-to-Income (DTI)**:
+  - Formula: `Total Monthly EMI / Monthly Income * 100%`.
+  - Rating: `≤ 35%` (Healthy, Green), `35% - 50%` (Caution, Amber), `> 50%` (High Risk, Red).
+- **Cashflow Health Badge**:
+  - Automatically identifies whether monthly cash flow is in Surplus or Deficit.
+
+

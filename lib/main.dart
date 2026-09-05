@@ -113,6 +113,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _isBusy = true;
   String? _error;
   String? _currentUser;
+  List<String> _savedAccounts = [];
 
   @override
   void initState() {
@@ -122,8 +123,10 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _restoreSession() async {
     final preferences = await SharedPreferences.getInstance();
+    final users = jsonDecode(preferences.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
     if (!mounted) return;
     setState(() {
+      _savedAccounts = users.keys.toList();
       _currentUser = preferences.getString('moneymonk_current_user');
       _isBusy = false;
     });
@@ -390,6 +393,33 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(height: 20),
                   SizedBox(width: double.infinity, child: FilledButton(onPressed: _submit, child: Text(_isSignup ? 'Sign up' : 'Sign in'))),
                   TextButton(onPressed: () => setState(() { _isSignup = !_isSignup; _error = null; }), child: Text(_isSignup ? 'Already have an account? Sign in' : 'New here? Sign up')),
+                  if (_savedAccounts.isNotEmpty && !_isSignup) ...[
+                    const SizedBox(height: 12),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    const Text('Saved accounts on this device:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: _savedAccounts.map((account) {
+                        return ActionChip(
+                          avatar: CircleAvatar(
+                            radius: 10,
+                            backgroundColor: moneyMonkNavy,
+                            child: Text(account[0].toUpperCase(), style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
+                          ),
+                          label: Text(account, style: const TextStyle(fontSize: 12)),
+                          onPressed: () {
+                            setState(() {
+                              _usernameController.text = account;
+                              _error = null;
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ]),
               ),
             ),
@@ -398,6 +428,34 @@ class _LoginPageState extends State<LoginPage> {
       ),
     );
   }
+}
+
+class UserProfile {
+  UserProfile({
+    required this.username,
+    required this.displayName,
+    this.email = '',
+    required this.createdAt,
+  });
+
+  final String username;
+  final String displayName;
+  final String email;
+  final DateTime createdAt;
+
+  Map<String, dynamic> toJson() => {
+        'username': username,
+        'displayName': displayName,
+        'email': email,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
+        username: json['username']?.toString() ?? '',
+        displayName: json['displayName']?.toString() ?? json['username']?.toString() ?? 'User',
+        email: json['email']?.toString() ?? '',
+        createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? '') ?? DateTime.now(),
+      );
 }
 
 class MoneyEntry {
@@ -434,15 +492,58 @@ class MoneyEntry {
 
   factory MoneyEntry.fromJson(Map<String, dynamic> json) {
     final rawOverrides = (json['overrides'] as Map?)?.cast<String, dynamic>() ?? {};
+    
+    // Defensive type resolution
+    MoneyEntryType type = MoneyEntryType.income;
+    final rawType = (json['type'] ?? '').toString().toLowerCase();
+    if (rawType.contains('expense')) {
+      type = MoneyEntryType.expense;
+    }
+
+    // Defensive mode resolution
+    MoneyEntryMode mode = MoneyEntryMode.oneTime;
+    final rawMode = (json['mode'] ?? '').toString().toLowerCase();
+    if (rawMode.contains('recurring')) {
+      mode = MoneyEntryMode.recurring;
+    }
+
+    // Defensive frequency resolution
+    RecurrenceFrequency? frequency;
+    final rawFreq = json['frequency']?.toString();
+    if (rawFreq != null && rawFreq.isNotEmpty) {
+      for (final f in RecurrenceFrequency.values) {
+        if (f.name.toLowerCase() == rawFreq.toLowerCase()) {
+          frequency = f;
+          break;
+        }
+      }
+    }
+
+    DateTime date;
+    try {
+      date = DateTime.parse(json['date'] as String);
+    } catch (_) {
+      date = DateTime.now();
+    }
+
+    final parsedOverrides = <DateTime, int>{};
+    rawOverrides.forEach((key, value) {
+      try {
+        final d = DateTime.parse(key);
+        final v = (value as num?)?.toInt() ?? 0;
+        parsedOverrides[d] = v;
+      } catch (_) {}
+    });
+
     return MoneyEntry(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      type: MoneyEntryType.values.byName(json['type'] as String),
-      amountInPaise: json['amount'] as int,
-      mode: MoneyEntryMode.values.byName(json['mode'] as String),
-      date: DateTime.parse(json['date'] as String),
-      frequency: json['frequency'] == null ? null : RecurrenceFrequency.values.byName(json['frequency'] as String),
-      overrides: rawOverrides.map((key, value) => MapEntry(DateTime.parse(key), value as int)),
+      id: json['id']?.toString() ?? DateTime.now().microsecondsSinceEpoch.toString(),
+      name: json['name']?.toString() ?? 'Item',
+      type: type,
+      amountInPaise: (json['amount'] as num?)?.toInt() ?? (json['amountInPaise'] as num?)?.toInt() ?? 0,
+      mode: mode,
+      date: date,
+      frequency: frequency,
+      overrides: parsedOverrides,
     );
   }
 
@@ -526,17 +627,26 @@ class LoanEntry {
         'tenure': tenureMonths,
       };
 
-  factory LoanEntry.fromJson(Map<String, dynamic> json) => LoanEntry(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        originalAmountInPaise: json['original'] as int,
-        outstandingAmountInPaise: json['outstanding'] as int,
-        interestRatePerAnnum: (json['rate'] as num).toDouble(),
-        emiInPaise: json['emi'] as int,
-        extraEmiInPaise: (json['extraEmi'] as int?) ?? 0,
-        startDate: DateTime.parse(json['startDate'] as String),
-        tenureMonths: json['tenure'] as int,
-      );
+  factory LoanEntry.fromJson(Map<String, dynamic> json) {
+    DateTime date;
+    try {
+      date = DateTime.parse(json['startDate'] as String);
+    } catch (_) {
+      date = DateTime.now();
+    }
+
+    return LoanEntry(
+      id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      name: json['name']?.toString() ?? 'Loan',
+      originalAmountInPaise: (json['original'] as num?)?.toInt() ?? (json['originalAmountInPaise'] as num?)?.toInt() ?? 0,
+      outstandingAmountInPaise: (json['outstanding'] as num?)?.toInt() ?? (json['outstandingAmountInPaise'] as num?)?.toInt() ?? 0,
+      interestRatePerAnnum: (json['rate'] as num?)?.toDouble() ?? (json['interestRatePerAnnum'] as num?)?.toDouble() ?? 0.0,
+      emiInPaise: (json['emi'] as num?)?.toInt() ?? (json['emiInPaise'] as num?)?.toInt() ?? 0,
+      extraEmiInPaise: (json['extraEmi'] as num?)?.toInt() ?? (json['extraEmiInPaise'] as num?)?.toInt() ?? 0,
+      startDate: date,
+      tenureMonths: (json['tenure'] as num?)?.toInt() ?? (json['tenureMonths'] as num?)?.toInt() ?? 12,
+    );
+  }
 
   String get prettyOriginal => _formatCurrency(originalAmountInPaise);
   String get prettyOutstanding => _formatCurrency(outstandingAmountInPaise);
@@ -699,8 +809,9 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   int _selectedIndex = 0;
   final List<MoneyEntry> _moneyEntries = <MoneyEntry>[];
   final List<LoanEntry> _loanEntries = <LoanEntry>[];
-  DateTime _selectedMonth = DateTime(2026, 9);
+  DateTime _selectedMonth = DateTime(DateTime.now().year, DateTime.now().month);
   bool _isMonthlyView = true;
+  bool _showAllTransactions = false;
   bool _isLoadingSavedData = true;
 
   @override
@@ -716,29 +827,78 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final loansKey = 'moneymonk_loans_${widget.username}';
       final money = preferences.getString(moneyKey);
       final loans = preferences.getString(loansKey);
+
+      final loadedMoney = <MoneyEntry>[];
+      final loadedLoans = <LoanEntry>[];
+
+      if (money != null && money.isNotEmpty) {
+        try {
+          final list = jsonDecode(money) as List;
+          for (final item in list) {
+            try {
+              if (item is Map<String, dynamic>) {
+                loadedMoney.add(MoneyEntry.fromJson(item));
+              } else if (item is Map) {
+                loadedMoney.add(MoneyEntry.fromJson(Map<String, dynamic>.from(item)));
+              }
+            } catch (e) {
+              debugPrint('Error parsing single money entry: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('Error decoding money JSON: $e');
+        }
+      }
+
+      if (loans != null && loans.isNotEmpty) {
+        try {
+          final list = jsonDecode(loans) as List;
+          for (final item in list) {
+            try {
+              if (item is Map<String, dynamic>) {
+                loadedLoans.add(LoanEntry.fromJson(item));
+              } else if (item is Map) {
+                loadedLoans.add(LoanEntry.fromJson(Map<String, dynamic>.from(item)));
+              }
+            } catch (e) {
+              debugPrint('Error parsing single loan entry: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('Error decoding loan JSON: $e');
+        }
+      }
+
       if (!mounted) return;
       setState(() {
         _moneyEntries.clear();
+        _moneyEntries.addAll(loadedMoney);
         _loanEntries.clear();
-        if (money != null) {
-          _moneyEntries.addAll((jsonDecode(money) as List).map((item) => MoneyEntry.fromJson(item as Map<String, dynamic>)));
-        }
-        if (loans != null) {
-          _loanEntries.addAll((jsonDecode(loans) as List).map((item) => LoanEntry.fromJson(item as Map<String, dynamic>)));
-        }
+        _loanEntries.addAll(loadedLoans);
         _isLoadingSavedData = false;
       });
-    } catch (_) {
+      debugPrint('Loaded ${_moneyEntries.length} money entries & ${_loanEntries.length} loans for ${widget.username}');
+    } catch (e) {
+      debugPrint('Error in _loadSavedData: $e');
       if (mounted) {
         setState(() => _isLoadingSavedData = false);
       }
     }
   }
 
-  Future<void> _saveData() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString('moneymonk_money_${widget.username}', jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList()));
-    await preferences.setString('moneymonk_loans_${widget.username}', jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList()));
+  Future<bool> _saveData() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final moneyJson = jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList());
+      final loansJson = jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList());
+      final s1 = await preferences.setString('moneymonk_money_${widget.username}', moneyJson);
+      final s2 = await preferences.setString('moneymonk_loans_${widget.username}', loansJson);
+      debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length})');
+      return s1 && s2;
+    } catch (e) {
+      debugPrint('Error in _saveData: $e');
+      return false;
+    }
   }
 
   Future<void> _signOut() async {
@@ -753,6 +913,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   }
 
   void _handleAddMoney() {
+    final messenger = ScaffoldMessenger.of(context);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -760,17 +921,28 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => AddMoneySheet(
-        onSave: (List<MoneyEntry> entries) {
+        initialDate: _selectedMonth,
+        onSave: (List<MoneyEntry> entries) async {
           setState(() {
             _moneyEntries.addAll(entries);
           });
-          _saveData();
+          await _saveData();
+          if (mounted) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text('Saved ${entries.length} ${entries.length == 1 ? "entry" : "entries"} successfully!'),
+                backgroundColor: moneyMonkIncome,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
         },
       ),
     );
   }
 
   void _handleEditMoney(MoneyEntry entry) {
+    final messenger = ScaffoldMessenger.of(context);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -780,14 +952,23 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       builder: (context) => EditMoneySheet(
         entry: entry,
         selectedMonth: _selectedMonth,
-        onSave: (MoneyEntry updated) {
+        onSave: (MoneyEntry updated) async {
           setState(() {
             final index = _moneyEntries.indexWhere((e) => e.id == entry.id);
             if (index >= 0) {
               _moneyEntries[index] = updated;
             }
           });
-          _saveData();
+          await _saveData();
+          if (mounted) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('Entry updated successfully!'),
+                backgroundColor: moneyMonkIncome,
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
         },
       ),
     );
@@ -810,17 +991,26 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           ),
         ],
       ),
-    ).then((delete) {
+    ).then((delete) async {
       if (delete == true) {
         setState(() {
           _moneyEntries.removeWhere((e) => e.id == entry.id);
         });
-        _saveData();
+        await _saveData();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Entry deleted.'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
       }
     });
   }
 
   void _handleAddLoan() {
+    final messenger = ScaffoldMessenger.of(context);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -828,28 +1018,47 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => AddLoanSheet(
-        onSave: (LoanEntry entry) {
+        onSave: (LoanEntry entry) async {
           setState(() {
             _loanEntries.add(entry);
           });
-          _saveData();
+          await _saveData();
+          if (mounted) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('Loan saved successfully!'),
+                backgroundColor: moneyMonkIncome,
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
         },
       ),
     );
   }
 
   void _handleEditLoan(LoanEntry loan) {
+    final messenger = ScaffoldMessenger.of(context);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (context) => AddLoanSheet(
         existingLoan: loan,
-        onSave: (updated) {
+        onSave: (updated) async {
           setState(() {
             final index = _loanEntries.indexWhere((entry) => entry.id == loan.id);
             if (index >= 0) _loanEntries[index] = updated;
           });
-          _saveData();
+          await _saveData();
+          if (mounted) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('Loan updated successfully!'),
+                backgroundColor: moneyMonkIncome,
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
         },
       ),
     );
@@ -872,14 +1081,116 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           ),
         ],
       ),
-    ).then((delete) {
+    ).then((delete) async {
       if (delete == true) {
         setState(() {
           _loanEntries.removeWhere((e) => e.id == entry.id);
         });
-        _saveData();
+        await _saveData();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Loan deleted.'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
       }
     });
+  }
+
+  void _exportUserData(BuildContext context) {
+    final exportData = {
+      'moneymonk_version': '1.0',
+      'username': widget.username,
+      'exported_at': DateTime.now().toIso8601String(),
+      'money_entries': _moneyEntries.map((e) => e.toJson()).toList(),
+      'loans': _loanEntries.map((l) => l.toJson()).toList(),
+    };
+    final jsonStr = const JsonEncoder.withIndent('  ').convert(exportData);
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.download_outlined, color: moneyMonkNavy),
+            const SizedBox(width: 8),
+            Text('Backup Data (${widget.username})'),
+          ],
+        ),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Here is your full data backup in JSON format. You can copy it for safekeeping:',
+                style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                height: 220,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: moneyMonkBackground,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: moneyMonkBorder),
+                ),
+                child: SelectableText(
+                  jsonStr,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showUserManagementSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        final navigator = Navigator.of(context);
+        return _UserManagementSheetContent(
+          currentUsername: widget.username,
+          moneyEntriesCount: _moneyEntries.length,
+          loansCount: _loanEntries.length,
+          onSwitchUser: (String targetUser) async {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('moneymonk_current_user', targetUser);
+            if (sheetContext.mounted) Navigator.pop(sheetContext);
+            if (mounted) {
+              navigator.pushAndRemoveUntil(
+                MaterialPageRoute<void>(builder: (_) => const LoginPage()),
+                (_) => false,
+              );
+            }
+          },
+          onSignOut: () {
+            Navigator.pop(sheetContext);
+            _signOut();
+          },
+          onExportData: () {
+            Navigator.pop(sheetContext);
+            _exportUserData(context);
+          },
+        );
+      },
+    );
   }
 
   int _getMoneyTotal(MoneyEntryType type, {DateTime? forMonth}) {
@@ -937,8 +1248,15 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         entries: _moneyEntries,
         selectedMonth: _selectedMonth,
         isMonthlyView: _isMonthlyView,
+        showAllTransactions: _showAllTransactions,
         onMonthChanged: (month) => setState(() => _selectedMonth = month),
-        onViewChanged: (isMonthly) => setState(() => _isMonthlyView = isMonthly),
+        onViewChanged: (isMonthly) => setState(() {
+          _isMonthlyView = isMonthly;
+          _showAllTransactions = false;
+        }),
+        onToggleAllTransactions: (showAll) => setState(() {
+          _showAllTransactions = showAll;
+        }),
         onAddPressed: _handleAddMoney,
         onEditPressed: _handleEditMoney,
         onDeletePressed: _handleDeleteMoney,
@@ -975,35 +1293,31 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
               });
             },
           ),
-          PopupMenuButton<String>(
-            tooltip: 'Account & Settings',
-            onSelected: (value) {
-              if (value == 'signOut') _signOut();
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                enabled: false,
-                child: Text('User: ${widget.username}', style: const TextStyle(fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'signOut',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout, size: 18, color: moneyMonkError),
-                    SizedBox(width: 8),
-                    Text('Sign out', style: TextStyle(color: moneyMonkError)),
-                  ],
+          // User Avatar & Multi-User Switcher Badge
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ActionChip(
+              avatar: CircleAvatar(
+                radius: 12,
+                backgroundColor: moneyMonkNavy,
+                child: Text(
+                  widget.username.isNotEmpty ? widget.username[0].toUpperCase() : 'U',
+                  style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
                 ),
               ),
-            ],
+              label: Text(
+                widget.username,
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: moneyMonkNavy),
+              ),
+              onPressed: () => _showUserManagementSheet(context),
+            ),
           ),
         ],
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-            child: _isLoadingSavedData
+          child: _isLoadingSavedData
               ? const Center(child: CircularProgressIndicator())
               : screens[_selectedIndex],
         ),
@@ -1030,6 +1344,229 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
             label: 'Loans',
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _UserManagementSheetContent extends StatefulWidget {
+  const _UserManagementSheetContent({
+    required this.currentUsername,
+    required this.moneyEntriesCount,
+    required this.loansCount,
+    required this.onSwitchUser,
+    required this.onSignOut,
+    required this.onExportData,
+  });
+
+  final String currentUsername;
+  final int moneyEntriesCount;
+  final int loansCount;
+  final ValueChanged<String> onSwitchUser;
+  final VoidCallback onSignOut;
+  final VoidCallback onExportData;
+
+  @override
+  State<_UserManagementSheetContent> createState() => _UserManagementSheetContentState();
+}
+
+class _UserManagementSheetContentState extends State<_UserManagementSheetContent> {
+  List<String> _allUsers = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUsers();
+  }
+
+  Future<void> _loadUsers() async {
+    final prefs = await SharedPreferences.getInstance();
+    final usersMap = jsonDecode(prefs.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
+    if (mounted) {
+      setState(() {
+        _allUsers = usersMap.keys.toList();
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final otherUsers = _allUsers.where((u) => u != widget.currentUsername).toList();
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.manage_accounts_outlined, color: moneyMonkNavy, size: 24),
+                    SizedBox(width: 8),
+                    Text(
+                      'Account & Users',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
+                    ),
+                  ],
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Active Account Card
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: moneyMonkNavyLight,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: moneyMonkNavy.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundColor: moneyMonkNavy,
+                    child: Text(
+                      widget.currentUsername.isNotEmpty ? widget.currentUsername[0].toUpperCase() : 'U',
+                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              widget.currentUsername,
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: moneyMonkIncome.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Text(
+                                'Active Account',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: moneyMonkIncome),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${widget.moneyEntriesCount} money entries • ${widget.loansCount} loans',
+                          style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Switch User Section
+            const Text(
+              'Switch User Account:',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
+            ),
+            const SizedBox(height: 10),
+            if (_loading)
+              const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()))
+            else if (otherUsers.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: moneyMonkBackground,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: moneyMonkBorder),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: moneyMonkSecondaryText),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'No other user accounts registered on this device yet.',
+                        style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              ...otherUsers.map((user) => Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: moneyMonkBorder),
+                    ),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: moneyMonkNavyLight,
+                        child: Text(
+                          user[0].toUpperCase(),
+                          style: const TextStyle(color: moneyMonkNavy, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      title: Text(user, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: const Text('Saved local profile', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText)),
+                      trailing: FilledButton.tonal(
+                        onPressed: () => widget.onSwitchUser(user),
+                        child: const Text('Switch'),
+                      ),
+                    ),
+                  )),
+
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 10),
+
+            // Actions: Add New Account, Export & Sign Out
+            ListTile(
+              leading: const Icon(Icons.person_add_outlined, color: moneyMonkNavy),
+              title: const Text('Register Another Account', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Create a new isolated profile on this device', style: TextStyle(fontSize: 11)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.pop(context);
+                widget.onSignOut();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.download_outlined, color: moneyMonkNavy),
+              title: const Text('Backup & Export My Data', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Download or copy JSON records for safekeeping', style: TextStyle(fontSize: 11)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: widget.onExportData,
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout, color: moneyMonkError),
+              title: const Text('Sign Out', style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkError)),
+              subtitle: const Text('Safely log out of this account', style: TextStyle(fontSize: 11)),
+              onTap: widget.onSignOut,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1099,6 +1636,122 @@ class HomeSummaryScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(child: _SummaryTile(label: 'Expense', value: _formatCurrency(monthlyExpense), color: moneyMonkExpense, onTap: onMoneyTap)),
         ]),
+        const SizedBox(height: 18),
+        // Financial Health Scorecard
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.analytics_outlined, color: moneyMonkNavy, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Financial Health Scorecard',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: balance >= 0 ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        balance >= 0 ? 'Cashflow Surplus' : 'Cashflow Deficit',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: balance >= 0 ? moneyMonkIncome : moneyMonkExpense,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: moneyMonkBackground,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: moneyMonkBorder),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Savings Rate', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText)),
+                            const SizedBox(height: 4),
+                            Text(
+                              monthlyIncome > 0 ? '${((balance / monthlyIncome) * 100).toStringAsFixed(1)}%' : '0.0%',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: (monthlyIncome > 0 && (balance / monthlyIncome) >= 0.2)
+                                    ? moneyMonkIncome
+                                    : ((monthlyIncome > 0 && (balance / monthlyIncome) >= 0.1) ? moneyMonkWarning : moneyMonkExpense),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              (monthlyIncome > 0 && (balance / monthlyIncome) >= 0.2)
+                                  ? 'Strong (≥20%)'
+                                  : ((monthlyIncome > 0 && (balance / monthlyIncome) >= 0.1) ? 'Moderate (10-20%)' : 'Needs attention (<10%)'),
+                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: moneyMonkBackground,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: moneyMonkBorder),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Debt-to-Income', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText)),
+                            const SizedBox(height: 4),
+                            Text(
+                              monthlyIncome > 0 ? '${((monthlyEmi / monthlyIncome) * 100).toStringAsFixed(1)}%' : '0.0%',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: (monthlyIncome == 0 || (monthlyEmi / monthlyIncome) <= 0.35)
+                                    ? moneyMonkIncome
+                                    : ((monthlyEmi / monthlyIncome) <= 0.5 ? moneyMonkWarning : moneyMonkExpense),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              (monthlyIncome == 0 || (monthlyEmi / monthlyIncome) <= 0.35)
+                                  ? 'Healthy (≤35%)'
+                                  : ((monthlyEmi / monthlyIncome) <= 0.5 ? 'Caution (35-50%)' : 'High Risk (>50%)'),
+                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(height: 24),
         const Text('Loans at a glance', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText)),
         const SizedBox(height: 10),
@@ -1800,8 +2453,10 @@ class MoneyScreen extends StatelessWidget {
     required this.entries,
     required this.selectedMonth,
     required this.isMonthlyView,
+    this.showAllTransactions = false,
     required this.onMonthChanged,
     required this.onViewChanged,
+    this.onToggleAllTransactions,
     required this.onAddPressed,
     required this.onEditPressed,
     required this.onDeletePressed,
@@ -1813,8 +2468,10 @@ class MoneyScreen extends StatelessWidget {
   final List<MoneyEntry> entries;
   final DateTime selectedMonth;
   final bool isMonthlyView;
+  final bool showAllTransactions;
   final ValueChanged<DateTime> onMonthChanged;
   final ValueChanged<bool> onViewChanged;
+  final ValueChanged<bool>? onToggleAllTransactions;
   final VoidCallback onAddPressed;
   final ValueChanged<MoneyEntry> onEditPressed;
   final ValueChanged<MoneyEntry> onDeletePressed;
@@ -1839,6 +2496,17 @@ class MoneyScreen extends StatelessWidget {
         : getMoneyTotalForYear(MoneyEntryType.expense);
     final balance = totalIncome - totalExpense;
 
+    final allTimeIncome = entries
+        .where((e) => e.type == MoneyEntryType.income)
+        .fold<int>(0, (sum, e) => sum + e.amountInPaise);
+    final allTimeExpense = entries
+        .where((e) => e.type == MoneyEntryType.expense)
+        .fold<int>(0, (sum, e) => sum + e.amountInPaise);
+    final allTimeBalance = allTimeIncome - allTimeExpense;
+
+    final allSortedEntries = List<MoneyEntry>.from(entries)
+      ..sort((a, b) => b.date.compareTo(a.date));
+
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -1858,55 +2526,79 @@ class MoneyScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Month selector and view toggle
-                    Wrap(
-                      alignment: WrapAlignment.spaceBetween,
-                      runSpacing: 8,
-                      spacing: 12,
+                  // Filter Chips & Date Selector
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    runSpacing: 8,
+                    spacing: 12,
                     children: [
-                      Row(
-                        children: [
-                          IconButton(
-                            onPressed: () => onMonthChanged(DateTime(
-                              selectedMonth.year,
-                              selectedMonth.month - 1,
-                            )),
-                            icon: const Icon(Icons.chevron_left),
-                            iconSize: 24,
-                          ),
-                          Text(
-                            isMonthlyView
-                                ? DateFormat('MMMM yyyy').format(selectedMonth)
-                                : DateFormat('yyyy').format(selectedMonth),
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: moneyMonkPrimaryText,
+                      if (!showAllTransactions)
+                        Row(
+                          children: [
+                            IconButton(
+                              onPressed: () => onMonthChanged(DateTime(
+                                selectedMonth.year,
+                                selectedMonth.month - 1,
+                              )),
+                              icon: const Icon(Icons.chevron_left),
+                              iconSize: 24,
                             ),
+                            Text(
+                              isMonthlyView
+                                  ? DateFormat('MMMM yyyy').format(selectedMonth)
+                                  : DateFormat('yyyy').format(selectedMonth),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: moneyMonkPrimaryText,
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () => onMonthChanged(DateTime(
+                                selectedMonth.year,
+                                selectedMonth.month + 1,
+                              )),
+                              icon: const Icon(Icons.chevron_right),
+                              iconSize: 24,
+                            ),
+                          ],
+                        )
+                      else
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: Text(
+                            'All Records',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
                           ),
-                          IconButton(
-                            onPressed: () => onMonthChanged(DateTime(
-                              selectedMonth.year,
-                              selectedMonth.month + 1,
-                            )),
-                            icon: const Icon(Icons.chevron_right),
-                            iconSize: 24,
-                          ),
-                        ],
-                      ),
+                        ),
                       Row(
                         children: [
                           FilterChip(
                             label: const Text('Monthly'),
-                            selected: isMonthlyView,
-                            onSelected: (_) => onViewChanged(true),
+                            selected: isMonthlyView && !showAllTransactions,
+                            onSelected: (_) {
+                              onToggleAllTransactions?.call(false);
+                              onViewChanged(true);
+                            },
                             selectedColor: moneyMonkNavyLight,
                           ),
                           const SizedBox(width: 8),
                           FilterChip(
                             label: const Text('Yearly'),
-                            selected: !isMonthlyView,
-                            onSelected: (_) => onViewChanged(false),
+                            selected: !isMonthlyView && !showAllTransactions,
+                            onSelected: (_) {
+                              onToggleAllTransactions?.call(false);
+                              onViewChanged(false);
+                            },
+                            selectedColor: moneyMonkNavyLight,
+                          ),
+                          const SizedBox(width: 8),
+                          FilterChip(
+                            label: const Text('All'),
+                            selected: showAllTransactions,
+                            onSelected: (_) {
+                              onToggleAllTransactions?.call(true);
+                            },
                             selectedColor: moneyMonkNavyLight,
                           ),
                         ],
@@ -1914,98 +2606,213 @@ class MoneyScreen extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 20),
-                  // Money table
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          LayoutBuilder(
-                            builder: (context, tableConstraints) {
-                              final income = _MoneyColumn(
-                                label: 'Income', entries: incomeEntries, accent: moneyMonkIncome,
-                                tint: const Color(0xFFF2FBF4), onEdit: onEditPressed, onDelete: onDeletePressed,
-                              );
-                              final expense = _MoneyColumn(
-                                label: 'Expense', entries: expenseEntries, accent: moneyMonkExpense,
-                                tint: const Color(0xFFFEF0EA), onEdit: onEditPressed, onDelete: onDeletePressed,
-                              );
-                              if (tableConstraints.maxWidth < 620) {
-                                return Column(children: [income, const SizedBox(height: 18), expense]);
-                              }
-                              return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Expanded(child: income), const SizedBox(width: 12), Expanded(child: expense),
-                              ]);
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          const Divider(height: 1),
-                          const SizedBox(height: 14),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Total Income',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: moneyMonkSecondaryText,
+
+                  if (showAllTransactions) ...[
+                    // All Transactions Summary Card
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('All-Time Income', style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+                                Text(_formatCurrency(allTimeIncome), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: moneyMonkIncome)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('All-Time Expenses', style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+                                Text(_formatCurrency(allTimeExpense), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: moneyMonkExpense)),
+                              ],
+                            ),
+                            const Divider(height: 20),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Cumulative Balance', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                                Text(
+                                  _formatCurrency(allTimeBalance),
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w700,
+                                    color: allTimeBalance >= 0 ? moneyMonkIncome : moneyMonkExpense,
+                                  ),
                                 ),
-                              ),
-                              Text(
-                                _formatCurrency(totalIncome),
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
-                                  color: moneyMonkIncome,
-                                ),
-                              ),
-                            ],
-                          ),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Total Expense',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: moneyMonkSecondaryText,
-                                ),
-                              ),
-                              Text(
-                                _formatCurrency(totalExpense),
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
-                                  color: moneyMonkExpense,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 22),
-                  const Text(
-                    'Balance',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: moneyMonkSecondaryText,
+                    const SizedBox(height: 16),
+                    Text('${allSortedEntries.length} total transactions recorded:', style: const TextStyle(fontWeight: FontWeight.w700, color: moneyMonkPrimaryText)),
+                    const SizedBox(height: 10),
+                    if (allSortedEntries.isEmpty)
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: moneyMonkSurface,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: moneyMonkBorder),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'No transactions recorded yet.\nTap "+ Add" below to create your first entry!',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: moneyMonkSecondaryText),
+                          ),
+                        ),
+                      )
+                    else
+                      ...allSortedEntries.map((entry) {
+                        final isIncome = entry.type == MoneyEntryType.income;
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: const BorderSide(color: moneyMonkBorder),
+                          ),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: isIncome ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
+                              child: Icon(
+                                isIncome ? Icons.arrow_upward : Icons.arrow_downward,
+                                color: isIncome ? moneyMonkIncome : moneyMonkExpense,
+                                size: 18,
+                              ),
+                            ),
+                            title: Text(entry.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                            subtitle: Text(
+                              '${DateFormat('dd MMM yyyy').format(entry.date)} • ${entry.mode == MoneyEntryMode.recurring ? "Recurring (${entry.frequency?.name ?? 'monthly'})" : "One-time"}',
+                              style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _formatCurrency(entry.amountInPaise),
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: isIncome ? moneyMonkIncome : moneyMonkExpense,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, size: 18),
+                                  tooltip: 'Edit',
+                                  onPressed: () => onEditPressed(entry),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, size: 18, color: moneyMonkError),
+                                  tooltip: 'Delete',
+                                  onPressed: () => onDeletePressed(entry),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                  ] else ...[
+                    // Money table
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            LayoutBuilder(
+                              builder: (context, tableConstraints) {
+                                final income = _MoneyColumn(
+                                  label: 'Income', entries: incomeEntries, accent: moneyMonkIncome,
+                                  tint: const Color(0xFFF2FBF4), onEdit: onEditPressed, onDelete: onDeletePressed,
+                                );
+                                final expense = _MoneyColumn(
+                                  label: 'Expense', entries: expenseEntries, accent: moneyMonkExpense,
+                                  tint: const Color(0xFFFEF0EA), onEdit: onEditPressed, onDelete: onDeletePressed,
+                                );
+                                if (tableConstraints.maxWidth < 620) {
+                                  return Column(children: [income, const SizedBox(height: 18), expense]);
+                                }
+                                return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Expanded(child: income), const SizedBox(width: 12), Expanded(child: expense),
+                                ]);
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            const Divider(height: 1),
+                            const SizedBox(height: 14),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Total Income',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: moneyMonkSecondaryText,
+                                  ),
+                                ),
+                                Text(
+                                  _formatCurrency(totalIncome),
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                    color: moneyMonkIncome,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Total Expense',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: moneyMonkSecondaryText,
+                                  ),
+                                ),
+                                Text(
+                                  _formatCurrency(totalExpense),
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                    color: moneyMonkExpense,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _formatCurrency(balance),
-                    style: const TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.w700,
-                      color: moneyMonkPrimaryText,
+                    const SizedBox(height: 22),
+                    const Text(
+                      'Balance',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: moneyMonkSecondaryText,
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _formatCurrency(balance),
+                      style: const TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.w700,
+                        color: moneyMonkPrimaryText,
+                      ),
+                    ),
+                  ],
+
                   const SizedBox(height: 24),
                   Semantics(
                     label: 'Add money',
@@ -2576,8 +3383,9 @@ class _LoanInfoBox extends StatelessWidget {
 }
 
 class AddMoneySheet extends StatefulWidget {
-  const AddMoneySheet({super.key, required this.onSave});
+  const AddMoneySheet({super.key, this.initialDate, required this.onSave});
 
+  final DateTime? initialDate;
   final void Function(List<MoneyEntry> entries) onSave;
 
   @override
@@ -2590,8 +3398,16 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
   final List<MoneyEntryType> _types = [MoneyEntryType.income];
   final List<MoneyEntryMode> _modes = [MoneyEntryMode.oneTime];
   final List<RecurrenceFrequency> _frequencies = [RecurrenceFrequency.monthly];
-  DateTime _selectedDate = DateTime.now();
-  DateTime _selectedRecurringStartDate = DateTime.now();
+  late DateTime _selectedDate;
+  late DateTime _selectedRecurringStartDate;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.initialDate ?? DateTime.now();
+    _selectedDate = d;
+    _selectedRecurringStartDate = d;
+  }
 
   @override
   void dispose() {

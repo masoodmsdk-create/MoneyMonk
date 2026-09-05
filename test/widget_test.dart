@@ -81,5 +81,33 @@ void main() {
 
     // Yearly view should show forecast
     expect(find.text('Forecast'), findsOneWidget);
+
+    // Tap All filter chip
+    await tester.tap(find.text('All'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('All Records'), findsOneWidget);
+    expect(find.text('All-Time Income'), findsOneWidget);
+  });
+
+  testWidgets('Financial Health Scorecard renders on Home screen', (tester) async {
+    await signUp(tester);
+
+    expect(find.text('Financial Health Scorecard'), findsOneWidget);
+    expect(find.text('Savings Rate'), findsOneWidget);
+    expect(find.text('Debt-to-Income'), findsOneWidget);
+  });
+
+  testWidgets('User Management Sheet opens via account chip', (tester) async {
+    await signUp(tester);
+
+    // Find and tap the user chip in AppBar
+    await tester.tap(find.text('tester'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Account & Users'), findsOneWidget);
+    expect(find.text('Active Account'), findsOneWidget);
+    expect(find.text('Backup & Export My Data'), findsOneWidget);
+    expect(find.text('Sign Out'), findsOneWidget);
   });
 }
