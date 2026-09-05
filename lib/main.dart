@@ -729,6 +729,74 @@ class LoanEntry {
       startDate: startDate,
     );
   }
+
+  LoanMonth? getStatusForMonth(DateTime month) {
+    final amort = calculateAmortization();
+    for (final item in amort.schedule) {
+      if (item.date.year == month.year && item.date.month == month.month) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  bool isActiveInMonth(DateTime month) {
+    final targetMonth = DateTime(month.year, month.month);
+    final startMonth = DateTime(startDate.year, startDate.month);
+    if (targetMonth.isBefore(startMonth)) return false;
+    final amort = calculateAmortization();
+    if (amort.schedule.isEmpty) return false;
+    final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
+    return !targetMonth.isAfter(lastMonth);
+  }
+
+  int getEmiForMonth(DateTime month) {
+    final status = getStatusForMonth(month);
+    if (status != null) {
+      return status.emiInPaise;
+    }
+    return 0;
+  }
+
+  int getRemainingPrincipalForMonth(DateTime month) {
+    final targetMonth = DateTime(month.year, month.month);
+    final startMonth = DateTime(startDate.year, startDate.month);
+    if (targetMonth.isBefore(startMonth)) {
+      return outstandingAmountInPaise;
+    }
+    final status = getStatusForMonth(month);
+    if (status != null) {
+      return status.remainingPrincipalInPaise;
+    }
+    final amort = calculateAmortization();
+    if (amort.schedule.isNotEmpty) {
+      final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
+      if (targetMonth.isAfter(lastMonth)) {
+        return 0;
+      }
+    }
+    return outstandingAmountInPaise;
+  }
+
+  int getRemainingMonthsAsOf(DateTime month) {
+    final targetMonth = DateTime(month.year, month.month);
+    final amort = calculateAmortization();
+    if (amort.schedule.isEmpty) return 0;
+    final startMonth = DateTime(startDate.year, startDate.month);
+    if (targetMonth.isBefore(startMonth)) {
+      return amort.remainingMonths;
+    }
+    final remaining = amort.schedule.where((m) => !DateTime(m.date.year, m.date.month).isBefore(targetMonth)).length;
+    return remaining;
+  }
+
+  bool isPaidOffAsOf(DateTime month) {
+    final targetMonth = DateTime(month.year, month.month);
+    final amort = calculateAmortization();
+    if (amort.schedule.isEmpty) return false;
+    final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
+    return targetMonth.isAfter(lastMonth);
+  }
 }
 
 class LoanAmortization {
@@ -1265,6 +1333,24 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
     return total;
   }
 
+  int _getLoanEmiTotal({DateTime? forMonth}) {
+    final month = forMonth ?? _selectedMonth;
+    var total = 0;
+    for (final loan in _loanEntries) {
+      total += loan.getEmiForMonth(month);
+    }
+    return total;
+  }
+
+  int _getLoanEmiTotalForYear({DateTime? forYear}) {
+    final year = (forYear ?? _selectedMonth).year;
+    var total = 0;
+    for (var m = 1; m <= 12; m++) {
+      total += _getLoanEmiTotal(forMonth: DateTime(year, m));
+    }
+    return total;
+  }
+
   List<MapEntry<DateTime, int>> _generateForecast() {
     final forecast = <MapEntry<DateTime, int>>[];
     final now = DateTime.now();
@@ -1273,7 +1359,8 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final forecastMonth = DateTime(now.year, now.month + i);
       final income = _getMoneyTotal(MoneyEntryType.income, forMonth: forecastMonth);
       final expense = _getMoneyTotal(MoneyEntryType.expense, forMonth: forecastMonth);
-      final balance = income - expense;
+      final loanEmi = _getLoanEmiTotal(forMonth: forecastMonth);
+      final balance = income - (expense + loanEmi);
       
       forecast.add(MapEntry(forecastMonth, balance));
     }
@@ -1296,6 +1383,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
       MoneyScreen(
         entries: _moneyEntries,
+        loanEntries: _loanEntries,
         selectedMonth: _selectedMonth,
         isMonthlyView: _isMonthlyView,
         showAllTransactions: _showAllTransactions,
@@ -1312,10 +1400,14 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         onDeletePressed: _handleDeleteMoney,
         getMoneyTotal: _getMoneyTotal,
         getMoneyTotalForYear: _getMoneyTotalForYear,
+        getLoanEmiTotal: _getLoanEmiTotal,
+        getLoanEmiTotalForYear: _getLoanEmiTotalForYear,
         generateForecast: _generateForecast,
       ),
       LoansScreen(
         entries: _loanEntries,
+        selectedMonth: _selectedMonth,
+        onMonthChanged: (month) => setState(() => _selectedMonth = month),
         onAddPressed: _handleAddLoan,
         onEditPressed: _handleEditLoan,
         onDeletePressed: _handleDeleteLoan,
@@ -1680,12 +1772,14 @@ class HomeSummaryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final balance = monthlyIncome - monthlyExpense;
-    final outstanding = loanEntries.fold<int>(0, (sum, loan) => sum + loan.outstandingAmountInPaise);
-    final monthlyEmi = loanEntries.fold<int>(0, (sum, loan) => sum + loan.emiInPaise + loan.extraEmiInPaise);
-    final highestRateLoan = loanEntries.isEmpty ? null : loanEntries.reduce(
-      (a, b) => a.interestRatePerAnnum >= b.interestRatePerAnnum ? a : b,
-    );
+    final activeLoansInMonth = loanEntries.where((loan) => loan.isActiveInMonth(selectedMonth)).toList();
+    final loanEmiInMonth = activeLoansInMonth.fold<int>(0, (sum, loan) => sum + loan.getEmiForMonth(selectedMonth));
+    final totalOutflow = monthlyExpense + loanEmiInMonth;
+    final balance = monthlyIncome - totalOutflow;
+    final outstandingInMonth = loanEntries.fold<int>(0, (sum, loan) => sum + loan.getRemainingPrincipalForMonth(selectedMonth));
+    final highestRateLoan = activeLoansInMonth.isEmpty
+        ? (loanEntries.isEmpty ? null : loanEntries.reduce((a, b) => a.interestRatePerAnnum >= b.interestRatePerAnnum ? a : b))
+        : activeLoansInMonth.reduce((a, b) => a.interestRatePerAnnum >= b.interestRatePerAnnum ? a : b);
 
     return SingleChildScrollView(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1713,7 +1807,12 @@ class HomeSummaryScreen extends StatelessWidget {
         Row(children: [
           Expanded(child: _SummaryTile(label: 'Income', value: _formatCurrency(monthlyIncome), color: moneyMonkIncome, onTap: onMoneyTap)),
           const SizedBox(width: 12),
-          Expanded(child: _SummaryTile(label: 'Expense', value: _formatCurrency(monthlyExpense), color: moneyMonkExpense, onTap: onMoneyTap)),
+          Expanded(child: _SummaryTile(
+            label: 'Expense',
+            value: _formatCurrency(totalOutflow),
+            color: moneyMonkExpense,
+            onTap: onMoneyTap,
+          )),
         ]),
         const SizedBox(height: 18),
         // Financial Health Scorecard
@@ -1809,20 +1908,20 @@ class HomeSummaryScreen extends StatelessWidget {
                             const Text('Debt-to-Income', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText)),
                             const SizedBox(height: 4),
                             Text(
-                              monthlyIncome > 0 ? '${((monthlyEmi / monthlyIncome) * 100).toStringAsFixed(1)}%' : '0.0%',
+                              monthlyIncome > 0 ? '${((loanEmiInMonth / monthlyIncome) * 100).toStringAsFixed(1)}%' : '0.0%',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w700,
-                                color: (monthlyIncome == 0 || (monthlyEmi / monthlyIncome) <= 0.35)
+                                color: (monthlyIncome == 0 || (loanEmiInMonth / monthlyIncome) <= 0.35)
                                     ? moneyMonkIncome
-                                    : ((monthlyEmi / monthlyIncome) <= 0.5 ? moneyMonkWarning : moneyMonkExpense),
+                                    : ((loanEmiInMonth / monthlyIncome) <= 0.5 ? moneyMonkWarning : moneyMonkExpense),
                               ),
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              (monthlyIncome == 0 || (monthlyEmi / monthlyIncome) <= 0.35)
+                              (monthlyIncome == 0 || (loanEmiInMonth / monthlyIncome) <= 0.35)
                                   ? 'Healthy (≤35%)'
-                                  : ((monthlyEmi / monthlyIncome) <= 0.5 ? 'Caution (35-50%)' : 'High Risk (>50%)'),
+                                  : ((loanEmiInMonth / monthlyIncome) <= 0.5 ? 'Caution (35-50%)' : 'High Risk (>50%)'),
                               style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
                             ),
                           ],
@@ -1842,9 +1941,9 @@ class HomeSummaryScreen extends StatelessWidget {
           onTap: onLoansTap,
           borderRadius: BorderRadius.circular(18),
           child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
-          _SummaryLine('Active loans', '${loanEntries.length}'),
-          _SummaryLine('Outstanding', _formatCurrency(outstanding)),
-          _SummaryLine('Monthly payments', _formatCurrency(monthlyEmi)),
+          _SummaryLine('Active loans (${DateFormat('MMM yy').format(selectedMonth)})', '${activeLoansInMonth.length}'),
+          _SummaryLine('Projected Outstanding', _formatCurrency(outstandingInMonth)),
+          _SummaryLine('Monthly EMIs due', _formatCurrency(loanEmiInMonth)),
           if (highestRateLoan != null) _SummaryLine('Highest ROI', '${highestRateLoan.name} (${highestRateLoan.interestRatePerAnnum.toStringAsFixed(2)}%)'),
           ]))),
         ),
@@ -1856,7 +1955,7 @@ class HomeSummaryScreen extends StatelessWidget {
           moneyEntries: moneyEntries,
           loanEntries: loanEntries,
           monthlyIncome: monthlyIncome,
-          monthlyExpense: monthlyExpense,
+          monthlyExpense: totalOutflow,
         ),
       ]),
     );
@@ -2775,6 +2874,7 @@ class MoneyScreen extends StatelessWidget {
   const MoneyScreen({
     super.key,
     required this.entries,
+    required this.loanEntries,
     required this.selectedMonth,
     required this.isMonthlyView,
     this.showAllTransactions = false,
@@ -2786,10 +2886,13 @@ class MoneyScreen extends StatelessWidget {
     required this.onDeletePressed,
     required this.getMoneyTotal,
     required this.getMoneyTotalForYear,
+    required this.getLoanEmiTotal,
+    required this.getLoanEmiTotalForYear,
     required this.generateForecast,
   });
 
   final List<MoneyEntry> entries;
+  final List<LoanEntry> loanEntries;
   final DateTime selectedMonth;
   final bool isMonthlyView;
   final bool showAllTransactions;
@@ -2801,6 +2904,8 @@ class MoneyScreen extends StatelessWidget {
   final ValueChanged<MoneyEntry> onDeletePressed;
   final int Function(MoneyEntryType, {DateTime? forMonth}) getMoneyTotal;
   final int Function(MoneyEntryType) getMoneyTotalForYear;
+  final int Function({DateTime? forMonth}) getLoanEmiTotal;
+  final int Function({DateTime? forYear}) getLoanEmiTotalForYear;
   final List<MapEntry<DateTime, int>> Function() generateForecast;
 
   @override
@@ -2811,13 +2916,20 @@ class MoneyScreen extends StatelessWidget {
     final expenseEntries = entries
         .where((e) => e.type == MoneyEntryType.expense && e.appliesToMonth(selectedMonth))
         .toList();
+    final activeLoanEntries = loanEntries
+        .where((e) => e.isActiveInMonth(selectedMonth))
+        .toList();
 
     final totalIncome = isMonthlyView
         ? getMoneyTotal(MoneyEntryType.income)
         : getMoneyTotalForYear(MoneyEntryType.income);
-    final totalExpense = isMonthlyView
+    final directExpense = isMonthlyView
         ? getMoneyTotal(MoneyEntryType.expense)
         : getMoneyTotalForYear(MoneyEntryType.expense);
+    final loanExpense = isMonthlyView
+        ? getLoanEmiTotal(forMonth: selectedMonth)
+        : getLoanEmiTotalForYear(forYear: selectedMonth);
+    final totalExpense = directExpense + loanExpense;
     final balance = totalIncome - totalExpense;
 
     final allTimeIncome = entries
@@ -3081,12 +3193,22 @@ class MoneyScreen extends StatelessWidget {
                             LayoutBuilder(
                               builder: (context, tableConstraints) {
                                 final income = _MoneyColumn(
-                                  label: 'Income', entries: incomeEntries, accent: moneyMonkIncome,
-                                  tint: const Color(0xFFF2FBF4), onEdit: onEditPressed, onDelete: onDeletePressed,
+                                  label: 'Income',
+                                  entries: incomeEntries,
+                                  selectedMonth: selectedMonth,
+                                  accent: moneyMonkIncome,
+                                  tint: const Color(0xFFF2FBF4),
+                                  onEdit: onEditPressed,
+                                  onDelete: onDeletePressed,
                                 );
                                 final expense = _MoneyColumn(
-                                  label: 'Expense', entries: expenseEntries, accent: moneyMonkExpense,
-                                  tint: const Color(0xFFFEF0EA), onEdit: onEditPressed, onDelete: onDeletePressed,
+                                  label: 'Expense',
+                                  entries: expenseEntries,
+                                  selectedMonth: selectedMonth,
+                                  accent: moneyMonkExpense,
+                                  tint: const Color(0xFFFEF0EA),
+                                  onEdit: onEditPressed,
+                                  onDelete: onDeletePressed,
                                 );
                                 if (tableConstraints.maxWidth < 620) {
                                   return Column(children: [income, const SizedBox(height: 18), expense]);
@@ -3096,6 +3218,78 @@ class MoneyScreen extends StatelessWidget {
                                 ]);
                               },
                             ),
+                            if (isMonthlyView && activeLoanEntries.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF7ED),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: const Color(0xFFFFEDD5)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Row(
+                                          children: [
+                                            Icon(Icons.account_balance, size: 16, color: moneyMonkExpense),
+                                            SizedBox(width: 6),
+                                            Text(
+                                              'Active Loan EMIs (Auto-recurring)',
+                                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: moneyMonkExpense),
+                                            ),
+                                          ],
+                                        ),
+                                        Text(
+                                          _formatCurrency(loanExpense),
+                                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: moneyMonkExpense),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    ...activeLoanEntries.map((loan) {
+                                      final emi = loan.getEmiForMonth(selectedMonth);
+                                      final remainingBal = loan.getRemainingPrincipalForMonth(selectedMonth);
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(vertical: 4),
+                                        child: Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(loan.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText)),
+                                                  Text(
+                                                    'Bal: ${_formatCurrency(remainingBal)} • ${loan.getRemainingMonthsAsOf(selectedMonth)} mos left',
+                                                    style: const TextStyle(fontSize: 11, color: moneyMonkSecondaryText),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white,
+                                                borderRadius: BorderRadius.circular(8),
+                                                border: Border.all(color: const Color(0xFFFED7AA)),
+                                              ),
+                                              child: Text(
+                                                _formatCurrency(emi),
+                                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: moneyMonkExpense),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }),
+                                  ],
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 16),
                             const Divider(height: 1),
                             const SizedBox(height: 14),
@@ -3120,11 +3314,30 @@ class MoneyScreen extends StatelessWidget {
                                 ),
                               ],
                             ),
+                            if (loanExpense > 0) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('Direct Expenses', style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText)),
+                                  Text(_formatCurrency(directExpense), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('Loan EMIs (Recurring)', style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText)),
+                                  Text(_formatCurrency(loanExpense), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText)),
+                                ],
+                              ),
+                            ],
+                            const SizedBox(height: 6),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 const Text(
-                                  'Total Expense',
+                                  'Total Outflow / Expense',
                                   style: TextStyle(
                                     fontSize: 14,
                                     fontWeight: FontWeight.w600,
@@ -3255,6 +3468,7 @@ class _MoneyColumn extends StatelessWidget {
   const _MoneyColumn({
     required this.label,
     required this.entries,
+    required this.selectedMonth,
     required this.accent,
     required this.tint,
     required this.onEdit,
@@ -3263,6 +3477,7 @@ class _MoneyColumn extends StatelessWidget {
 
   final String label;
   final List<MoneyEntry> entries;
+  final DateTime selectedMonth;
   final Color accent;
   final Color tint;
   final ValueChanged<MoneyEntry> onEdit;
@@ -3270,6 +3485,8 @@ class _MoneyColumn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final columnTotal = entries.fold(0, (sum, entry) => sum + entry.getAmountForMonth(selectedMonth));
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3277,30 +3494,78 @@ class _MoneyColumn extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(label, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: accent)),
-            Text(_formatCurrency(entries.fold(0, (sum, entry) => sum + entry.amountInPaise)), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
+            Text(_formatCurrency(columnTotal), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
           ],
         ),
         const SizedBox(height: 10),
         if (entries.isEmpty)
           Text('No ${label.toLowerCase()} entries', style: const TextStyle(fontSize: 13, color: moneyMonkMuted))
         else
-          ...entries.map((entry) => Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: tint, borderRadius: BorderRadius.circular(8)),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(entry.name, overflow: TextOverflow.ellipsis)),
-                    Text(entry.prettyAmount, style: TextStyle(fontWeight: FontWeight.w600, color: accent)),
-                    PopupMenuButton(
-                      itemBuilder: (context) => [
-                        PopupMenuItem(onTap: () => onEdit(entry), child: const Text('Edit')),
-                        PopupMenuItem(onTap: () => onDelete(entry), child: const Text('Delete')),
+          ...entries.map((entry) {
+            final amountForMonth = entry.getAmountForMonth(selectedMonth);
+            final monthKey = DateTime(selectedMonth.year, selectedMonth.month);
+            final isOverridden = entry.overrides.containsKey(monthKey);
+            final isRecurring = entry.mode == MoneyEntryMode.recurring;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: tint, borderRadius: BorderRadius.circular(8)),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(child: Text(entry.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
+                            const SizedBox(width: 6),
+                            if (isRecurring)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: accent.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  isOverridden ? 'Recurring (Custom)' : 'Recurring',
+                                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: accent),
+                                ),
+                              )
+                            else
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: moneyMonkSecondaryText.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const Text(
+                                  'One-time',
+                                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (isOverridden)
+                          Text(
+                            'Base: ${_formatCurrency(entry.amountInPaise)}',
+                            style: const TextStyle(fontSize: 10, color: moneyMonkSecondaryText),
+                          ),
                       ],
                     ),
-                  ],
-                ),
-              )),
+                  ),
+                  Text(_formatCurrency(amountForMonth), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
+                  PopupMenuButton(
+                    itemBuilder: (context) => [
+                      PopupMenuItem(onTap: () => onEdit(entry), child: const Text('Edit')),
+                      PopupMenuItem(onTap: () => onDelete(entry), child: const Text('Delete')),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
       ],
     );
   }
@@ -3315,18 +3580,24 @@ class LoansScreen extends StatelessWidget {
   const LoansScreen({
     super.key,
     required this.entries,
+    this.selectedMonth,
+    this.onMonthChanged,
     required this.onAddPressed,
     required this.onEditPressed,
     required this.onDeletePressed,
   });
 
   final List<LoanEntry> entries;
+  final DateTime? selectedMonth;
+  final ValueChanged<DateTime>? onMonthChanged;
   final VoidCallback onAddPressed;
   final ValueChanged<LoanEntry> onEditPressed;
   final ValueChanged<LoanEntry> onDeletePressed;
 
   @override
   Widget build(BuildContext context) {
+    final activeMonth = selectedMonth ?? DateTime.now();
+
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -3344,7 +3615,68 @@ class LoansScreen extends StatelessWidget {
                     color: moneyMonkPrimaryText,
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 12),
+                // Month Selector for Dynamic Loan Amortization Status
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    if (onMonthChanged != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            onPressed: () => onMonthChanged!(DateTime(
+                              activeMonth.year,
+                              activeMonth.month - 1,
+                            )),
+                            icon: const Icon(Icons.chevron_left),
+                            iconSize: 22,
+                          ),
+                          Text(
+                            DateFormat('MMMM yyyy').format(activeMonth),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: moneyMonkPrimaryText,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => onMonthChanged!(DateTime(
+                              activeMonth.year,
+                              activeMonth.month + 1,
+                            )),
+                            icon: const Icon(Icons.chevron_right),
+                            iconSize: 22,
+                          ),
+                        ],
+                      )
+                    else
+                      Text(
+                        DateFormat('MMMM yyyy').format(activeMonth),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: moneyMonkPrimaryText,
+                        ),
+                      ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: moneyMonkNavyLight,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        'Dynamic Amortization',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: moneyMonkNavy,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
                 if (entries.isNotEmpty) ...[
                   _LoanAdvisor(entries: entries),
                   const SizedBox(height: 20),
@@ -3364,6 +3696,7 @@ class LoansScreen extends StatelessWidget {
                 ] else ...[
                   ...entries.map((loan) => _LoanCard(
                     loan: loan,
+                    selectedMonth: activeMonth,
                     onEdit: () => onEditPressed(loan),
                     onDelete: () => onDeletePressed(loan),
                   )),
@@ -3549,17 +3882,24 @@ class _LoanComparison extends StatelessWidget {
 class _LoanCard extends StatelessWidget {
   const _LoanCard({
     required this.loan,
+    this.selectedMonth,
     required this.onEdit,
     required this.onDelete,
   });
 
   final LoanEntry loan;
+  final DateTime? selectedMonth;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final amortization = loan.calculateAmortization();
+    final viewMonth = selectedMonth ?? DateTime.now();
+    final remainingPrincipalInMonth = loan.getRemainingPrincipalForMonth(viewMonth);
+    final remainingMonthsInMonth = loan.getRemainingMonthsAsOf(viewMonth);
+    final isPaidOff = loan.isPaidOffAsOf(viewMonth);
+    final emiDueInMonth = loan.getEmiForMonth(viewMonth);
 
     return Card(
       child: Padding(
@@ -3593,6 +3933,28 @@ class _LoanCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+            if (isPaidOff)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDCFCE7),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF86EFAC)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: moneyMonkIncome, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '🎉 Projected to be fully paid off by ${DateFormat('MMMM yyyy').format(viewMonth)}!',
+                        style: const TextStyle(fontWeight: FontWeight.w700, color: moneyMonkIncome, fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (!amortization.isValid)
               Container(
                 padding: const EdgeInsets.all(12),
@@ -3619,14 +3981,22 @@ class _LoanCard extends StatelessWidget {
                 crossAxisSpacing: 12,
                 childAspectRatio: 1.4,
                 children: [
-                  _LoanInfoBox('Outstanding', loan.prettyOutstanding),
+                  _LoanInfoBox(
+                    'Outstanding (${DateFormat('MMM yy').format(viewMonth)})',
+                    _formatCurrency(remainingPrincipalInMonth),
+                  ),
                   _LoanInfoBox('Original', loan.prettyOriginal),
-                  _LoanInfoBox('EMI/month', loan.prettyEmi),
+                  _LoanInfoBox(
+                    'Monthly Payment',
+                    isPaidOff
+                        ? '₹0 (Paid Off)'
+                        : _formatCurrency(emiDueInMonth > 0 ? emiDueInMonth : (loan.emiInPaise + loan.extraEmiInPaise)),
+                  ),
                   _LoanInfoBox('Extra EMI', _formatCurrency(loan.extraEmiInPaise)),
                   _LoanInfoBox('Interest Rate', '${loan.interestRatePerAnnum.toStringAsFixed(2)}%'),
                   _LoanInfoBox(
                     'Remaining',
-                    '${amortization.remainingMonths} months',
+                    isPaidOff ? 'Completed 🎉' : '$remainingMonthsInMonth months',
                   ),
                   _LoanInfoBox(
                     'Total Interest',
@@ -4304,6 +4674,7 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
   late TextEditingController _nameController;
   late TextEditingController _amountController;
   late MoneyEntryType _type;
+  bool _applyToAllRecurringMonths = false;
 
   @override
   void initState() {
@@ -4356,15 +4727,24 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
 
     final monthKey = DateTime(widget.selectedMonth.year, widget.selectedMonth.month);
     final overrides = Map<DateTime, int>.from(widget.entry.overrides);
+    var baseAmountInPaise = widget.entry.amountInPaise;
+
     if (widget.entry.mode == MoneyEntryMode.recurring) {
-      overrides[monthKey] = amountInPaise;
+      if (_applyToAllRecurringMonths) {
+        baseAmountInPaise = amountInPaise;
+        overrides.remove(monthKey);
+      } else {
+        overrides[monthKey] = amountInPaise;
+      }
+    } else {
+      baseAmountInPaise = amountInPaise;
     }
 
     final updated = MoneyEntry(
       id: widget.entry.id,
       name: _nameController.text.trim(),
       type: _type,
-      amountInPaise: amountInPaise,
+      amountInPaise: baseAmountInPaise,
       mode: widget.entry.mode,
       date: widget.entry.date,
       frequency: widget.entry.frequency,
@@ -4443,6 +4823,49 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
                   ),
                 ],
               ),
+              if (widget.entry.mode == MoneyEntryMode.recurring) ...[
+                const SizedBox(height: 18),
+                const Text(
+                  'Apply change to:',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: moneyMonkSecondaryText,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ChoiceChip(
+                        label: Text('This month (${DateFormat('MMM yy').format(widget.selectedMonth)})'),
+                        selected: !_applyToAllRecurringMonths,
+                        onSelected: (_) => setState(() => _applyToAllRecurringMonths = false),
+                        selectedColor: moneyMonkNavyLight,
+                        labelStyle: TextStyle(
+                          color: !_applyToAllRecurringMonths ? moneyMonkNavy : moneyMonkPrimaryText,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ChoiceChip(
+                        label: const Text('All recurring months'),
+                        selected: _applyToAllRecurringMonths,
+                        onSelected: (_) => setState(() => _applyToAllRecurringMonths = true),
+                        selectedColor: moneyMonkNavyLight,
+                        labelStyle: TextStyle(
+                          color: _applyToAllRecurringMonths ? moneyMonkNavy : moneyMonkPrimaryText,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 18),
               TextFormField(
                 controller: _nameController,

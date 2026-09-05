@@ -1714,6 +1714,33 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Multi-Month Date Safety Indicator**:
   - In `MoneyScreen`: When an account has transactions recorded in other dates/months but none in the active month, a notification banner appears with a 1-tap **"View All"** action, preventing mistaken beliefs that data was lost.
 
+57. Automated Monthly Financial & Dynamic Loan Amortization Engine
+
+- **Heart of the App — Unified Monthly Cash Flow**:
+  - **Dynamic Loan EMI Integration**:
+    - Active loans are no longer disconnected from monthly budgets.
+    - For any viewed month `M`, active loan commitments (scheduled EMI + any extra EMI) automatically calculate and deduct as recurring debt obligations.
+    - In `MoneyScreen`:
+      - Under Expenses, an explicit **"Active Loan EMIs (Auto-recurring)"** card lists every active loan with its monthly payment, remaining principal as of that month, and remaining tenure.
+      - Total Monthly Expense = Direct Expenses + Active Loan EMIs.
+      - Net Monthly Balance = Total Income - (Direct Expenses + Active Loan EMIs).
+      - Yearly Forecast dynamically deducts only the loans active in each projected month; once a loan completes, future months automatically reflect ₹0 loan deduction and higher savings.
+  - **Month-by-Month Dynamic Loan Amortization**:
+    - Reducing-balance amortization mathematically simulates monthly payments from `startDate`.
+    - In `LoansScreen`: Features a dynamic month switcher allowing users to inspect projected loan progress as of any month:
+      - Dynamic Outstanding Balance as of viewed month.
+      - Monthly payment due in that month (EMI + Extra EMI).
+      - Remaining tenure as of that month.
+      - Celebratory "Projected to be fully paid off by [Month Year] 🎉" badge once completed.
+  - **Seamless Recurring & One-Time Expense Population**:
+    - **Recurring Entries**: Automatically populate into all future months based on frequency (monthly, bi-monthly, quarterly, half-yearly, yearly) without re-entering.
+    - **One-Time Entries**: Added on-demand for any target month, showing only in that specific month without leaking into adjacent months.
+    - **Flexible Recurring Edit Scope**: When editing recurring entries, users can choose between:
+      - "This month only": saves a month-specific override (`overrides[month]`) without affecting baseline amounts for other months.
+      - "All recurring months": updates the baseline recurring amount (`amountInPaise`) across all past and future months.
+    - **Visual Recurrence Badges**: `_MoneyColumn` displays `[Recurring]`, `[Recurring (Custom)]`, and `[One-time]` chips for immediate visual transparency.
+
+
 
 
 
