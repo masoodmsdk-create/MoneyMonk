@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:moneymonk/main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Permanent Cloud Persistence Service for MoneyMonk using Cloud Firestore.
 ///
@@ -32,6 +33,8 @@ class FirestoreService {
 
   bool get isAvailable => _firestore != null && !disableForTesting;
 
+  String? get authUid => _auth?.currentUser?.uid;
+
   /// Initializes Firebase and Firestore instance safely.
   Future<void> ensureInitialized() async {
     if (disableForTesting || _initialized) return;
@@ -49,30 +52,76 @@ class FirestoreService {
     }
   }
 
-  /// Resolves the cloud ownership boundary UID for the given account username.
-  /// If Firebase Auth is authenticated, returns the user's Auth UID.
-  /// Otherwise, computes a stable deterministic account UID for that username.
-  String getUid(String username) {
-    if (_auth?.currentUser != null && _auth!.currentUser!.uid.isNotEmpty) {
-      return _auth!.currentUser!.uid;
-    }
+  /// Returns the authenticated UID for cloud operations.
+  /// Cloud access has no username or anonymous fallback.
+  String? getUid() => authUid;
+
+  /// Returns the namespace for local-only storage.
+  /// Authenticated sessions use the Firebase UID. Offline sessions receive a
+  /// locally generated namespace that is stored for that local account.
+  Future<String> getLocalStorageUid(String username) async {
+    await ensureInitialized();
     final normalized = username.trim().toLowerCase();
-    final hash = sha256.convert(utf8.encode('moneymonk:account:$normalized')).toString();
-    return 'user_${hash.substring(0, 24)}';
+    final authenticatedEmail = _auth?.currentUser?.email?.toLowerCase();
+    final authenticatedUsername = authenticatedEmail != null && authenticatedEmail.endsWith('@moneymonk.app')
+        ? authenticatedEmail.substring(0, authenticatedEmail.length - '@moneymonk.app'.length)
+        : null;
+    if (authUid != null && authenticatedUsername == normalized) {
+      return authUid!;
+    }
+
+    final preferences = await SharedPreferences.getInstance();
+    final key = 'moneymonk_local_uid_$normalized';
+    final existing = preferences.getString(key);
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final entropy = '$normalized:${DateTime.now().microsecondsSinceEpoch}';
+    final generated = 'local_${sha256.convert(utf8.encode(entropy)).toString().substring(0, 24)}';
+    await preferences.setString(key, generated);
+    return generated;
   }
 
-  /// Attempts Firebase Authentication sign-in/up if enabled.
-  Future<void> authenticateAccount(String username, String password) async {
+  /// Signs in or creates the Firebase Auth account for the MoneyMonk account.
+  /// Returns false when Firebase is unavailable so local offline mode can work.
+  Future<bool> authenticateAccount(String username, String password) async {
     await ensureInitialized();
-    if (_auth == null) return;
+    if (_auth == null) return false;
     final email = '${username.trim().toLowerCase()}@moneymonk.app';
     try {
       await _auth!.signInWithEmailAndPassword(email: email, password: password);
+      return true;
     } catch (_) {
       try {
         await _auth!.createUserWithEmailAndPassword(email: email, password: password);
-      } catch (_) {}
+        return true;
+      } catch (e) {
+        debugPrint('Firebase Auth notice: $e');
+        return false;
+      }
     }
+  }
+
+  /// Stores the account identity alongside its user-owned financial data.
+  Future<bool> saveUserProfile(String username) async {
+    await ensureInitialized();
+    final uid = authUid;
+    if (_firestore == null || uid == null) return false;
+    try {
+      await _firestore!.collection('users').doc(uid).collection('profile').doc('info').set({
+        'uid': uid,
+        'username': username.trim().toLowerCase(),
+        'email': _auth!.currentUser?.email,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      return true;
+    } catch (e) {
+      debugPrint('Firestore saveUserProfile notice: $e');
+      return false;
+    }
+  }
+
+  Future<void> signOut() async {
+    await _auth?.signOut();
   }
 
   /// Loads all MoneyEntry documents for this user from Firestore.

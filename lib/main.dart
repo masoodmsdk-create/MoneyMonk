@@ -140,7 +140,8 @@ class _LoginPageState extends State<LoginPage> {
 
     final counts = <String, int>{};
     for (final acc in users.keys) {
-      final raw = preferences.getString('moneymonk_money_$acc');
+      final localUid = await FirestoreService.instance.getLocalStorageUid(acc);
+      final raw = preferences.getString('moneymonk_money_$localUid');
       if (raw != null && raw.isNotEmpty) {
         try {
           counts[acc] = (jsonDecode(raw) as List).length;
@@ -171,7 +172,6 @@ class _LoginPageState extends State<LoginPage> {
     }
     await preferences.setString('moneymonk_current_user', activeUser);
     await preferences.setString('moneymonk_last_user', activeUser);
-
     if (!mounted) return;
     setState(() {
       _savedAccounts = users.keys.toList();
@@ -208,32 +208,23 @@ class _LoginPageState extends State<LoginPage> {
       }
       users[username] = hash;
       await preferences.setString('moneymonk_users', jsonEncode(users));
-      final legacyMoney = preferences.getString('moneymonk_money');
-      final legacyLoans = preferences.getString('moneymonk_loans');
-      if (legacyMoney != null && preferences.getString('moneymonk_money_$username') == null) {
-        await preferences.setString('moneymonk_money_$username', legacyMoney);
-      }
-      if (legacyLoans != null && preferences.getString('moneymonk_loans_$username') == null) {
-        await preferences.setString('moneymonk_loans_$username', legacyLoans);
-      }
     } else {
       // Seamless Zero-Friction: If account doesn't exist on this browser yet,
       // automatically register it with this password and sign straight in!
       if (!users.containsKey(username)) {
         users[username] = hash;
         await preferences.setString('moneymonk_users', jsonEncode(users));
-        final legacyMoney = preferences.getString('moneymonk_money');
-        final legacyLoans = preferences.getString('moneymonk_loans');
-        if (legacyMoney != null && preferences.getString('moneymonk_money_$username') == null) {
-          await preferences.setString('moneymonk_money_$username', legacyMoney);
-        }
-        if (legacyLoans != null && preferences.getString('moneymonk_loans_$username') == null) {
-          await preferences.setString('moneymonk_loans_$username', legacyLoans);
-        }
       } else if (users[username] != hash) {
         setState(() => _error = 'Incorrect password for "$username". Use "Forgot Password?" below to reset.');
         return;
       }
+    }
+
+    // Bind this MoneyMonk account to Firebase Auth before resolving its UID.
+    // Local storage remains available when Firebase is unreachable.
+    final firebaseAuthenticated = await FirestoreService.instance.authenticateAccount(username, password);
+    if (firebaseAuthenticated) {
+      await FirestoreService.instance.saveUserProfile(username);
     }
 
     await preferences.setString('moneymonk_current_user', username);
@@ -1162,9 +1153,10 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         }
       }
 
-      final moneyKey = 'moneymonk_money_${widget.username}';
-      final loansKey = 'moneymonk_loans_${widget.username}';
-      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+      final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
+      final moneyKey = 'moneymonk_money_$localUid';
+      final loansKey = 'moneymonk_loans_$localUid';
+      final tombstoneKey = 'moneymonk_deleted_$localUid';
       final isDeleted = preferences.getBool(tombstoneKey) ?? false;
 
       // 1. Check local user-specific storage keys (if not previously wiped via Delete All Data)
@@ -1172,22 +1164,6 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         addMoneyFromRaw(preferences.getString(moneyKey));
         addLoansFromRaw(preferences.getString(loansKey));
 
-        // If local user key was empty, check redundant global device backups
-        if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
-          addMoneyFromRaw(preferences.getString('moneymonk_global_latest_money'));
-          addLoansFromRaw(preferences.getString('moneymonk_global_latest_loans'));
-          addMoneyFromRaw(preferences.getString('moneymonk_money'));
-          addLoansFromRaw(preferences.getString('moneymonk_loans'));
-
-          // Deep scan remaining profile keys as fallback
-          for (final key in preferences.getKeys()) {
-            if (key.startsWith('moneymonk_money_')) {
-              addMoneyFromRaw(preferences.getString(key));
-            } else if (key.startsWith('moneymonk_loans_')) {
-              addLoansFromRaw(preferences.getString(key));
-            }
-          }
-        }
       }
 
       // Fast optimistic render from local storage
@@ -1203,14 +1179,16 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       }
 
       // 2. Fetch authoritative records from Cloud Firestore
-      final uid = FirestoreService.instance.getUid(widget.username);
       List<MoneyEntry> cloudMoney = [];
       List<LoanEntry> cloudLoans = [];
-      try {
-        cloudMoney = await FirestoreService.instance.loadMoney(uid);
-        cloudLoans = await FirestoreService.instance.loadLoans(uid);
-      } catch (e) {
-        debugPrint('Firestore load notice: $e');
+      final uid = FirestoreService.instance.authUid;
+      if (uid != null) {
+        try {
+          cloudMoney = await FirestoreService.instance.loadMoney(uid);
+          cloudLoans = await FirestoreService.instance.loadLoans(uid);
+        } catch (e) {
+          debugPrint('Firestore load notice: $e');
+        }
       }
 
       if (cloudMoney.isNotEmpty || cloudLoans.isNotEmpty) {
@@ -1222,7 +1200,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         if (isDeleted) {
           await preferences.remove(tombstoneKey);
         }
-      } else if (!isDeleted && (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty)) {
+      } else if (uid != null && !isDeleted && (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty)) {
         // Local records exist but cloud is empty -> Deterministic one-time migration to Firestore
         debugPrint('Migrating ${loadedMoney.length} money and ${loadedLoans.length} loans to Firestore for $uid');
         await FirestoreService.instance.batchSaveAll(uid, loadedMoney, loadedLoans);
@@ -1234,10 +1212,6 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         final loansJson = jsonEncode(loadedLoans.map((e) => e.toJson()).toList());
         await preferences.setString(moneyKey, moneyJson);
         await preferences.setString(loansKey, loansJson);
-        await preferences.setString('moneymonk_global_latest_money', moneyJson);
-        await preferences.setString('moneymonk_global_latest_loans', loansJson);
-        await preferences.setString('moneymonk_money', moneyJson);
-        await preferences.setString('moneymonk_loans', loansJson);
       }
 
       if (!mounted) return;
@@ -1262,29 +1236,24 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final preferences = await SharedPreferences.getInstance();
       final moneyJson = jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList());
       final loansJson = jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList());
+      final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
       
       // Clear tombstone when user actively saves new or updated records
-      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+      final tombstoneKey = 'moneymonk_deleted_$localUid';
       await preferences.remove(tombstoneKey);
 
       // 1. User namespace
-      final s1 = await preferences.setString('moneymonk_money_${widget.username}', moneyJson);
-      final s2 = await preferences.setString('moneymonk_loans_${widget.username}', loansJson);
-      
-      // 2. Redundant global device backups
-      await preferences.setString('moneymonk_global_latest_money', moneyJson);
-      await preferences.setString('moneymonk_global_latest_loans', loansJson);
-      await preferences.setString('moneymonk_money', moneyJson);
-      await preferences.setString('moneymonk_loans', loansJson);
-      await preferences.setString('moneymonk_last_active_user', widget.username);
-      await preferences.setString('moneymonk_last_saved_time', DateTime.now().toIso8601String());
+      final s1 = await preferences.setString('moneymonk_money_$localUid', moneyJson);
+      final s2 = await preferences.setString('moneymonk_loans_$localUid', loansJson);
 
       // 3. Persist to Cloud Firestore (authoritative permanent store)
-      final uid = FirestoreService.instance.getUid(widget.username);
-      FirestoreService.instance.batchSaveAll(uid, _moneyEntries, _loanEntries).catchError((e) {
-        debugPrint('Firestore background sync notice: $e');
-        return false;
-      });
+      final uid = FirestoreService.instance.authUid;
+      if (uid != null) {
+        FirestoreService.instance.batchSaveAll(uid, _moneyEntries, _loanEntries).catchError((e) {
+          debugPrint('Firestore background sync notice: $e');
+          return false;
+        });
+      }
 
       debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length}) + Firestore cloud persistence');
       return s1 && s2;
@@ -1296,9 +1265,15 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
 
   Future<void> _signOut() async {
     final preferences = await SharedPreferences.getInstance();
+    await FirestoreService.instance.signOut();
     await preferences.setString('moneymonk_last_user', widget.username);
     await preferences.remove('moneymonk_current_user');
     if (mounted) {
+      setState(() {
+        _moneyEntries.clear();
+        _loanEntries.clear();
+        _isLoadingSavedData = true;
+      });
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute<void>(builder: (_) => const LoginPage()),
         (_) => false,
@@ -1387,8 +1362,10 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
     ).then((delete) async {
       if (delete == true) {
-        final uid = FirestoreService.instance.getUid(widget.username);
-        FirestoreService.instance.deleteMoney(uid, entry.id);
+        final uid = FirestoreService.instance.authUid;
+        if (uid != null) {
+          FirestoreService.instance.deleteMoney(uid, entry.id);
+        }
         setState(() {
           _moneyEntries.removeWhere((e) => e.id == entry.id);
         });
@@ -1440,7 +1417,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       isScrollControlled: true,
       builder: (context) => AddLoanSheet(
         existingLoan: loan,
-        onSave: (updated) async {
+            onSave: (LoanEntry updated) async {
           setState(() {
             final index = _loanEntries.indexWhere((entry) => entry.id == loan.id);
             if (index >= 0) _loanEntries[index] = updated;
@@ -1479,8 +1456,10 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
     ).then((delete) async {
       if (delete == true) {
-        final uid = FirestoreService.instance.getUid(widget.username);
-        FirestoreService.instance.deleteLoan(uid, entry.id);
+        final uid = FirestoreService.instance.authUid;
+        if (uid != null) {
+          FirestoreService.instance.deleteLoan(uid, entry.id);
+        }
         setState(() {
           _loanEntries.removeWhere((e) => e.id == entry.id);
         });
@@ -1499,28 +1478,22 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
 
   Future<void> _handleDeleteAllData() async {
     try {
-      final uid = FirestoreService.instance.getUid(widget.username);
       // 1. Permanently wipe cloud Firestore documents
-      await FirestoreService.instance.deleteAllData(uid);
+      final uid = FirestoreService.instance.authUid;
+      if (uid != null) {
+        await FirestoreService.instance.deleteAllData(uid);
+      }
 
       final preferences = await SharedPreferences.getInstance();
-      final moneyKey = 'moneymonk_money_${widget.username}';
-      final loansKey = 'moneymonk_loans_${widget.username}';
-      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+      final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
+      final moneyKey = 'moneymonk_money_$localUid';
+      final loansKey = 'moneymonk_loans_$localUid';
+      final tombstoneKey = 'moneymonk_deleted_$localUid';
 
       // 2. Remove user-specific keys and record tombstone
       await preferences.remove(moneyKey);
       await preferences.remove(loansKey);
       await preferences.setBool(tombstoneKey, true);
-
-      // 3. Clear redundant device backup if it belonged to this user
-      final lastActiveUser = preferences.getString('moneymonk_last_active_user');
-      if (lastActiveUser == widget.username) {
-        await preferences.remove('moneymonk_global_latest_money');
-        await preferences.remove('moneymonk_global_latest_loans');
-        await preferences.remove('moneymonk_money');
-        await preferences.remove('moneymonk_loans');
-      }
 
       if (mounted) {
         setState(() {
@@ -1555,7 +1528,16 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           loansCount: _loanEntries.length,
           onSwitchUser: (String targetUser) async {
             final prefs = await SharedPreferences.getInstance();
+            await FirestoreService.instance.signOut();
             await prefs.setString('moneymonk_current_user', targetUser);
+            await prefs.setString('moneymonk_last_user', targetUser);
+            if (mounted) {
+              setState(() {
+                _moneyEntries.clear();
+                _loanEntries.clear();
+                _isLoadingSavedData = true;
+              });
+            }
             if (sheetContext.mounted) Navigator.pop(sheetContext);
             if (mounted) {
               navigator.pushAndRemoveUntil(
@@ -1976,8 +1958,9 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
     final counts = <String, int>{};
     final loanCounts = <String, int>{};
     for (final u in usersMap.keys) {
-      final moneyRaw = prefs.getString('moneymonk_money_$u');
-      final loansRaw = prefs.getString('moneymonk_loans_$u');
+      final localUid = await FirestoreService.instance.getLocalStorageUid(u);
+      final moneyRaw = prefs.getString('moneymonk_money_$localUid');
+      final loansRaw = prefs.getString('moneymonk_loans_$localUid');
       if (moneyRaw != null && moneyRaw.isNotEmpty) {
         try {
           counts[u] = (jsonDecode(moneyRaw) as List).length;
@@ -2849,10 +2832,11 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
 
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
-    final tierStr = prefs.getString('moneymonk_ai_tier_${widget.username}') ?? 'free';
-    final powerStr = prefs.getString('moneymonk_ai_power_${widget.username}') ?? 'turbo';
-    final key = prefs.getString('moneymonk_gemini_key_${widget.username}') ?? '';
-    final googleAcc = prefs.getString('moneymonk_google_account_${widget.username}') ?? '';
+    final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
+    final tierStr = prefs.getString('moneymonk_ai_tier_$localUid') ?? 'free';
+    final powerStr = prefs.getString('moneymonk_ai_power_$localUid') ?? 'turbo';
+    final key = prefs.getString('moneymonk_gemini_key_$localUid') ?? '';
+    final googleAcc = prefs.getString('moneymonk_google_account_$localUid') ?? '';
     
     if (mounted) {
       setState(() {
@@ -2868,14 +2852,16 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
 
   Future<void> _savePowerMode(AiPowerMode mode) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('moneymonk_ai_power_${widget.username}', mode == AiPowerMode.deepAudit ? 'deepAudit' : 'turbo');
+    final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
+    await prefs.setString('moneymonk_ai_power_$localUid', mode == AiPowerMode.deepAudit ? 'deepAudit' : 'turbo');
   }
 
   Future<void> _savePreferences({required AiTier tier, required String apiKey, required String googleAccount}) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('moneymonk_ai_tier_${widget.username}', tier == AiTier.paid ? 'paid' : 'free');
-    await prefs.setString('moneymonk_gemini_key_${widget.username}', apiKey.trim());
-    await prefs.setString('moneymonk_google_account_${widget.username}', googleAccount.trim());
+    final localUid = await FirestoreService.instance.getLocalStorageUid(widget.username);
+    await prefs.setString('moneymonk_ai_tier_$localUid', tier == AiTier.paid ? 'paid' : 'free');
+    await prefs.setString('moneymonk_gemini_key_$localUid', apiKey.trim());
+    await prefs.setString('moneymonk_google_account_$localUid', googleAccount.trim());
 
     if (mounted) {
       setState(() {

@@ -1449,6 +1449,20 @@ The UI is understandable without documentation.
 
 The change does not accidentally reintroduce FINAURA patterns.
 
+40. Project DNA and Release Security
+
+Read `PROJECT_DNA.md` before changing authentication, persistence, Firestore rules, recovery, or deployment configuration.
+
+The cloud ownership boundary is always:
+
+MoneyMonk account -> Firebase Auth UID -> users/{uid} -> money / loans / profile.
+
+Every cloud operation must use the authenticated Firebase Auth UID. A username-derived UID is only an offline compatibility fallback and must never be used after Firebase authentication succeeds. Firestore rules must reject unauthenticated requests and reject any request whose UID does not match the `{uid}` path segment.
+
+Account switching is a security boundary. Local recovery must stay within the active account's namespace; global backups and another account's local keys must not populate the active account. Sign-out must clear Firebase Auth and prevent the previous account's private records from remaining visible.
+
+Before deployment, run `flutter analyze`, `flutter test`, and `flutter build web --release`. Report Firebase billing status as externally verified or unverified; source inspection alone cannot prove whether a Firebase project uses Blaze billing. Do not introduce paid services, payment APIs, analytics, or unrelated Firebase services without explicit approval.
+
 40. Final Agent Instruction
 
 You are not building a feature-rich finance platform.
