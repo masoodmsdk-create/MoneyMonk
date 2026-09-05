@@ -1533,6 +1533,11 @@ enum AiTier {
   paid,
 }
 
+enum AiPowerMode {
+  turbo,
+  deepAudit,
+}
+
 class HomeSummaryScreen extends StatelessWidget {
   const HomeSummaryScreen({
     super.key,
@@ -1763,6 +1768,7 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
   final _googleEmailController = TextEditingController();
   
   AiTier _tier = AiTier.free;
+  AiPowerMode _powerMode = AiPowerMode.turbo;
   String _savedApiKey = '';
   String _savedGoogleAccount = '';
   String _answer = 'Ask about your savings rate, debt payoff strategy, or budget breakdown.';
@@ -1777,18 +1783,25 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
     final tierStr = prefs.getString('moneymonk_ai_tier_${widget.username}') ?? 'free';
+    final powerStr = prefs.getString('moneymonk_ai_power_${widget.username}') ?? 'turbo';
     final key = prefs.getString('moneymonk_gemini_key_${widget.username}') ?? '';
     final googleAcc = prefs.getString('moneymonk_google_account_${widget.username}') ?? '';
     
     if (mounted) {
       setState(() {
         _tier = tierStr == 'paid' ? AiTier.paid : AiTier.free;
+        _powerMode = powerStr == 'deepAudit' ? AiPowerMode.deepAudit : AiPowerMode.turbo;
         _savedApiKey = key;
         _savedGoogleAccount = googleAcc;
         _apiKeyController.text = key;
         _googleEmailController.text = googleAcc;
       });
     }
+  }
+
+  Future<void> _savePowerMode(AiPowerMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('moneymonk_ai_power_${widget.username}', mode == AiPowerMode.deepAudit ? 'deepAudit' : 'turbo');
   }
 
   Future<void> _savePreferences({required AiTier tier, required String apiKey, required String googleAccount}) async {
@@ -1837,11 +1850,16 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
 
     setState(() {
       _isAskingGemini = true;
-      _answer = 'Firebase AI (${_tier == AiTier.free ? "Free Tier" : "Paid / Cloud Tier"}) is analyzing your finances...';
+      _answer = _powerMode == AiPowerMode.turbo
+          ? '⚡ Turbo AI analyzing your finances in real-time (~1s)...'
+          : '🧠 Deep Audit AI running institutional financial analysis...';
     });
 
     final balance = widget.monthlyIncome - widget.monthlyExpense;
     final savingsRate = widget.monthlyIncome > 0 ? ((balance / widget.monthlyIncome) * 100).toStringAsFixed(1) : '0';
+    final totalMonthlyEmi = widget.loanEntries.fold<int>(0, (sum, l) => sum + l.emiInPaise + l.extraEmiInPaise);
+    final totalOutstanding = widget.loanEntries.fold<int>(0, (sum, l) => sum + l.outstandingAmountInPaise);
+    final dti = widget.monthlyIncome > 0 ? ((totalMonthlyEmi / widget.monthlyIncome) * 100).toStringAsFixed(1) : '0';
 
     final moneyBreakdown = widget.moneyEntries.map((e) => 
       '- ${e.type == MoneyEntryType.income ? "Income" : "Expense"}: ${e.name} (${_formatCurrency(e.amountInPaise)}, ${e.mode == MoneyEntryMode.recurring ? "Recurring" : "One-time"})'
@@ -1854,19 +1872,21 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
     final systemPrompt = '''You are the MoneyMonk Financial Advisor, powered by Firebase AI & Google Gemini.
 You provide clear, friendly, realistic, and highly practical financial advice based strictly on the user's supplied figures.
 All amounts are in Indian Rupees (₹).
+Operating Mode: ${_powerMode == AiPowerMode.turbo ? "TURBO (Provide ultra-fast, sharp, direct actionable bullet points with zero fluff)" : "DEEP AUDIT (Provide comprehensive multi-step mathematical analysis, debt avalanche roadmap, and 50/30/20 optimization)"}.
 
 Guidelines:
 1. Be structured and concise: use clear headings, bullet points, and highlight key numbers.
-2. Emphasize prudent debt reduction (prioritizing high-interest loans first - debt avalanche method) while maintaining a safe emergency fund.
-3. Suggest practical ways to trim listed expenses or allocate monthly surplus.
+2. Debt Reduction: Analyze DTI ($dti%) and prioritize high-interest loans (debt avalanche method) while maintaining emergency reserves.
+3. Suggest practical ways to trim listed expenses or allocate monthly surplus (${_formatCurrency(balance)}).
 4. If asked about budgeting, use realistic frameworks like the 50/30/20 rule adjusted for their loans.
 5. Provide honest, encouraging observations without making misleading investment guarantees.
 
 User Financial Summary:
 - Monthly Income: ${_formatCurrency(widget.monthlyIncome)}
 - Monthly Expenses: ${_formatCurrency(widget.monthlyExpense)}
-- Monthly Net Balance (Surplus/Deficit): ${_formatCurrency(balance)} (Savings Rate: $savingsRate%)
-- Active Loans Count: ${widget.loanEntries.length}
+- Monthly Net Cash Flow (Surplus/Deficit): ${_formatCurrency(balance)} (Savings Rate: $savingsRate%)
+- Total Monthly Debt Outflow (EMI): ${_formatCurrency(totalMonthlyEmi)} (Debt-to-Income DTI: $dti%)
+- Total Outstanding Debt: ${_formatCurrency(totalOutstanding)} across ${widget.loanEntries.length} loans
 
 Money Entries Breakdown:
 ${moneyBreakdown.isEmpty ? "No individual entries recorded yet." : moneyBreakdown}
@@ -1878,7 +1898,9 @@ User Query: $effectiveQuestion''';
 
     try {
       http.Response? response;
-      final modelsToTry = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3.6-flash'];
+      final modelsToTry = _powerMode == AiPowerMode.turbo
+          ? ['gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3.6-flash']
+          : ['gemini-3.6-flash', 'gemini-flash-lite-latest'];
 
       for (final model in modelsToTry) {
         response = await http.post(
@@ -1891,7 +1913,11 @@ User Query: $effectiveQuestion''';
                   {'text': systemPrompt}
                 ]
               }
-            ]
+            ],
+            'generationConfig': {
+              'temperature': _powerMode == AiPowerMode.turbo ? 0.2 : 0.4,
+              'maxOutputTokens': _powerMode == AiPowerMode.turbo ? 1024 : 2048,
+            },
           }),
         );
         if (response.statusCode == 200) {
@@ -2254,6 +2280,97 @@ User Query: $effectiveQuestion''';
                   ? 'Powered by Firebase AI & Gemini Flash (100% Free • 1,500 req/day • Zero Billing)'
                   : 'Powered by Gemini Dedicated Cloud Tier (Private & High Quota)',
               style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+            ),
+            const SizedBox(height: 12),
+
+            // AI Analysis Power Selector
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: moneyMonkBackground,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: moneyMonkBorder),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        setState(() => _powerMode = AiPowerMode.turbo);
+                        _savePowerMode(AiPowerMode.turbo);
+                      },
+                      borderRadius: BorderRadius.circular(9),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        decoration: BoxDecoration(
+                          color: _powerMode == AiPowerMode.turbo ? moneyMonkSurface : Colors.transparent,
+                          borderRadius: BorderRadius.circular(9),
+                          boxShadow: _powerMode == AiPowerMode.turbo
+                              ? [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 4, offset: const Offset(0, 1))]
+                              : null,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.bolt, size: 16, color: _powerMode == AiPowerMode.turbo ? moneyMonkWarning : moneyMonkSecondaryText),
+                            const SizedBox(width: 5),
+                            Text(
+                              'Turbo Power (1s Instant)',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: _powerMode == AiPowerMode.turbo ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: InkWell(
+                      onTap: () {
+                        setState(() => _powerMode = AiPowerMode.deepAudit);
+                        _savePowerMode(AiPowerMode.deepAudit);
+                      },
+                      borderRadius: BorderRadius.circular(9),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        decoration: BoxDecoration(
+                          color: _powerMode == AiPowerMode.deepAudit ? moneyMonkSurface : Colors.transparent,
+                          borderRadius: BorderRadius.circular(9),
+                          boxShadow: _powerMode == AiPowerMode.deepAudit
+                              ? [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 4, offset: const Offset(0, 1))]
+                              : null,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.psychology, size: 16, color: _powerMode == AiPowerMode.deepAudit ? moneyMonkNavy : moneyMonkSecondaryText),
+                            const SizedBox(width: 5),
+                            Text(
+                              'Deep Reasoning Audit',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: _powerMode == AiPowerMode.deepAudit ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _powerMode == AiPowerMode.turbo
+                  ? '⚡ 1-Second Instant Response: Optimized for fast, crisp financial recommendations.'
+                  : '🧠 Deep Multi-Step Reasoning: Full mathematical audit, debt avalanche timeline & 50/30/20 optimization.',
+              style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: moneyMonkSecondaryText),
             ),
             const SizedBox(height: 14),
 

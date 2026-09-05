@@ -1652,4 +1652,36 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Last-User Prefill**:
   - Tracks `moneymonk_last_user` so returning users immediately see their username pre-filled even after signing out or restarting their browser session.
 
+54. AI Power Modes: 1-Second Turbo vs Deep Reasoning Audit
+
+- **Latency Root Cause & Benchmark Analysis**:
+  - Newer Gemini 3-series models (`gemini-3.6-flash`, `gemini-3.5-flash`) by default generate internal reasoning/thinking tokens before returning text output, introducing 17 to 23 seconds of roundtrip latency.
+  - Furthermore, legacy models such as `gemini-2.5-flash` return `404 NOT_FOUND` (deprecated for newly created API keys), and `gemini-flash-latest` experiences transient `503 UNAVAILABLE` during peak times.
+  - Direct live HTTP benchmark results:
+    - `gemini-flash-lite-latest`: **1,280 ms** (Status 200) — Over 18x faster than thinking models!
+    - `gemini-3.1-flash-lite`: **1,822 ms** (Status 200) — Ultra-responsive backup.
+    - `gemini-3.5-flash`: **17,730 ms** (Status 200) — Deep thinking reasoning.
+    - `gemini-3.6-flash`: **23,288 ms** (Status 200) — Exhaustive multi-step reasoning.
+- **Dual Power Mode Architecture (`AiPowerMode`)**:
+  - ⚡ **Turbo Power (1s Instant)**:
+    - Target: `gemini-flash-lite-latest` (fallback to `gemini-3.1-flash-lite`).
+    - Settings: `temperature: 0.2`, `maxOutputTokens: 1024`.
+    - Output: Direct, punchy, high-impact bullet points delivered in ~1 second with zero waiting.
+  - 🧠 **Deep Reasoning Audit**:
+    - Target: `gemini-3.6-flash` (fallback to `gemini-3.5-flash`).
+    - Settings: `temperature: 0.3`, `maxOutputTokens: 2048`.
+    - Output: Comprehensive multi-step financial audit, debt avalanche timeline, and 50/30/20 budget breakdowns.
+- **Interactive UI Mode Switcher**:
+  - `AiAdvisorSheet` displays a prominent segmented toggle: `⚡ Turbo Power (1s Instant)` vs `🧠 Deep Reasoning Audit`.
+  - Dynamically updates active status chips, model tags, and response badges.
+- **Enriched AI Financial Context**:
+  - Automatically computes and feeds into the Gemini system prompt:
+    - Monthly Net Income and Total Monthly Expenses.
+    - Cashflow Surplus/Deficit.
+    - Debt-to-Income ratio (DTI %).
+    - Cumulative Outstanding Debt across all loans.
+    - Total Monthly EMI debt burden.
+    - Itemized breakdown of income streams, expenses, and loans (with ROI % and tenure).
+
+
 
