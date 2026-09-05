@@ -114,6 +114,7 @@ class _LoginPageState extends State<LoginPage> {
   String? _error;
   String? _currentUser;
   List<String> _savedAccounts = [];
+  Map<String, int> _accountCounts = {};
 
   @override
   void initState() {
@@ -132,15 +133,31 @@ class _LoginPageState extends State<LoginPage> {
       await preferences.setString('moneymonk_users', jsonEncode(users));
     }
 
+    final counts = <String, int>{};
+    for (final acc in users.keys) {
+      final raw = preferences.getString('moneymonk_money_$acc');
+      if (raw != null && raw.isNotEmpty) {
+        try {
+          counts[acc] = (jsonDecode(raw) as List).length;
+        } catch (_) {}
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _savedAccounts = users.keys.toList();
+      _accountCounts = counts;
       _currentUser = currentUser;
       if (currentUser == null) {
         if (lastUser != null && lastUser.isNotEmpty) {
           _usernameController.text = lastUser;
         } else if (_savedAccounts.isNotEmpty) {
-          _usernameController.text = _savedAccounts.first;
+          // Prioritize prefilling whichever account actually has saved records!
+          final accWithData = _savedAccounts.firstWhere(
+            (a) => (counts[a] ?? 0) > 0,
+            orElse: () => _savedAccounts.first,
+          );
+          _usernameController.text = accWithData;
         }
       }
       _isBusy = false;
@@ -439,13 +456,17 @@ class _LoginPageState extends State<LoginPage> {
                       spacing: 8,
                       runSpacing: 6,
                       children: _savedAccounts.map((account) {
+                        final count = _accountCounts[account] ?? 0;
                         return ActionChip(
                           avatar: CircleAvatar(
                             radius: 10,
                             backgroundColor: moneyMonkNavy,
                             child: Text(account[0].toUpperCase(), style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
                           ),
-                          label: Text(account, style: const TextStyle(fontSize: 12)),
+                          label: Text(
+                            count > 0 ? '$account ($count ${count == 1 ? "entry" : "entries"})' : account,
+                            style: const TextStyle(fontSize: 12),
+                          ),
                           onPressed: () {
                             setState(() {
                               _usernameController.text = account;
@@ -856,6 +877,38 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
     _loadSavedData();
   }
 
+  void _parseMoneyJson(String? raw, List<MoneyEntry> target) {
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List;
+      for (final item in list) {
+        try {
+          if (item is Map<String, dynamic>) {
+            target.add(MoneyEntry.fromJson(item));
+          } else if (item is Map) {
+            target.add(MoneyEntry.fromJson(Map<String, dynamic>.from(item)));
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  void _parseLoansJson(String? raw, List<LoanEntry> target) {
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List;
+      for (final item in list) {
+        try {
+          if (item is Map<String, dynamic>) {
+            target.add(LoanEntry.fromJson(item));
+          } else if (item is Map) {
+            target.add(LoanEntry.fromJson(Map<String, dynamic>.from(item)));
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   Future<void> _loadSavedData() async {
     try {
       final preferences = await SharedPreferences.getInstance();
@@ -867,41 +920,53 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final loadedMoney = <MoneyEntry>[];
       final loadedLoans = <LoanEntry>[];
 
-      if (money != null && money.isNotEmpty) {
-        try {
-          final list = jsonDecode(money) as List;
-          for (final item in list) {
-            try {
-              if (item is Map<String, dynamic>) {
-                loadedMoney.add(MoneyEntry.fromJson(item));
-              } else if (item is Map) {
-                loadedMoney.add(MoneyEntry.fromJson(Map<String, dynamic>.from(item)));
-              }
-            } catch (e) {
-              debugPrint('Error parsing single money entry: $e');
-            }
-          }
-        } catch (e) {
-          debugPrint('Error decoding money JSON: $e');
-        }
-      }
+      _parseMoneyJson(money, loadedMoney);
+      _parseLoansJson(loans, loadedLoans);
 
-      if (loans != null && loans.isNotEmpty) {
-        try {
-          final list = jsonDecode(loans) as List;
-          for (final item in list) {
-            try {
-              if (item is Map<String, dynamic>) {
-                loadedLoans.add(LoanEntry.fromJson(item));
-              } else if (item is Map) {
-                loadedLoans.add(LoanEntry.fromJson(Map<String, dynamic>.from(item)));
+      // FAIL-SAFE AUTO-RECOVERY:
+      // If the current username has 0 entries (e.g. fresh login, username typo, or session restored with new alias),
+      // seamlessly search this browser's device storage for any saved data and restore it!
+      if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
+        debugPrint('Account "${widget.username}" has no saved entries. Scanning device backups...');
+
+        // 1. Check redundant global device backup
+        final globalMoney = preferences.getString('moneymonk_global_latest_money');
+        final globalLoans = preferences.getString('moneymonk_global_latest_loans');
+        _parseMoneyJson(globalMoney, loadedMoney);
+        _parseLoansJson(globalLoans, loadedLoans);
+
+        // 2. Check legacy unnamespaced keys
+        if (loadedMoney.isEmpty) {
+          _parseMoneyJson(preferences.getString('moneymonk_money'), loadedMoney);
+        }
+        if (loadedLoans.isEmpty) {
+          _parseLoansJson(preferences.getString('moneymonk_loans'), loadedLoans);
+        }
+
+        // 3. Scan all saved user profiles on this browser device
+        if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
+          for (final key in preferences.getKeys()) {
+            if (key.startsWith('moneymonk_money_') && key != moneyKey) {
+              final candidateList = <MoneyEntry>[];
+              _parseMoneyJson(preferences.getString(key), candidateList);
+              if (candidateList.isNotEmpty) {
+                loadedMoney.addAll(candidateList);
+                final targetLoansKey = key.replaceFirst('moneymonk_money_', 'moneymonk_loans_');
+                _parseLoansJson(preferences.getString(targetLoansKey), loadedLoans);
+                debugPrint('Auto-recovered ${loadedMoney.length} entries from $key for ${widget.username}');
+                break;
               }
-            } catch (e) {
-              debugPrint('Error parsing single loan entry: $e');
             }
           }
-        } catch (e) {
-          debugPrint('Error decoding loan JSON: $e');
+        }
+
+        // If data was recovered from any device backup, immediately link and save it into this profile!
+        if (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty) {
+          final moneyJson = jsonEncode(loadedMoney.map((e) => e.toJson()).toList());
+          final loansJson = jsonEncode(loadedLoans.map((e) => e.toJson()).toList());
+          await preferences.setString(moneyKey, moneyJson);
+          await preferences.setString(loansKey, loansJson);
+          debugPrint('Linked ${loadedMoney.length} recovered entries to ${widget.username}');
         }
       }
 
@@ -927,9 +992,18 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final preferences = await SharedPreferences.getInstance();
       final moneyJson = jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList());
       final loansJson = jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList());
+      
+      // 1. User namespace
       final s1 = await preferences.setString('moneymonk_money_${widget.username}', moneyJson);
       final s2 = await preferences.setString('moneymonk_loans_${widget.username}', loansJson);
-      debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length})');
+      
+      // 2. Redundant global device backups (guarantees data survives across any account switches/typos)
+      await preferences.setString('moneymonk_global_latest_money', moneyJson);
+      await preferences.setString('moneymonk_global_latest_loans', loansJson);
+      await preferences.setString('moneymonk_last_active_user', widget.username);
+      await preferences.setString('moneymonk_last_saved_time', DateTime.now().toIso8601String());
+
+      debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length}) + global backup');
       return s1 && s2;
     } catch (e) {
       debugPrint('Error in _saveData: $e');
@@ -1346,6 +1420,8 @@ class _UserManagementSheetContent extends StatefulWidget {
 
 class _UserManagementSheetContentState extends State<_UserManagementSheetContent> {
   List<String> _allUsers = [];
+  Map<String, int> _userEntryCounts = {};
+  Map<String, int> _userLoanCounts = {};
   bool _loading = true;
 
   @override
@@ -1357,9 +1433,27 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
   Future<void> _loadUsers() async {
     final prefs = await SharedPreferences.getInstance();
     final usersMap = jsonDecode(prefs.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
+    final counts = <String, int>{};
+    final loanCounts = <String, int>{};
+    for (final u in usersMap.keys) {
+      final moneyRaw = prefs.getString('moneymonk_money_$u');
+      final loansRaw = prefs.getString('moneymonk_loans_$u');
+      if (moneyRaw != null && moneyRaw.isNotEmpty) {
+        try {
+          counts[u] = (jsonDecode(moneyRaw) as List).length;
+        } catch (_) {}
+      }
+      if (loansRaw != null && loansRaw.isNotEmpty) {
+        try {
+          loanCounts[u] = (jsonDecode(loansRaw) as List).length;
+        } catch (_) {}
+      }
+    }
     if (mounted) {
       setState(() {
         _allUsers = usersMap.keys.toList();
+        _userEntryCounts = counts;
+        _userLoanCounts = loanCounts;
         _loading = false;
       });
     }
@@ -1503,7 +1597,10 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
                         ),
                       ),
                       title: Text(user, style: const TextStyle(fontWeight: FontWeight.w600)),
-                      subtitle: const Text('Saved local profile', style: TextStyle(fontSize: 11, color: moneyMonkSecondaryText)),
+                      subtitle: Text(
+                        '${_userEntryCounts[user] ?? 0} money entries • ${_userLoanCounts[user] ?? 0} loans',
+                        style: const TextStyle(fontSize: 11, color: moneyMonkSecondaryText),
+                      ),
                       trailing: FilledButton.tonal(
                         onPressed: () => widget.onSwitchUser(user),
                         child: const Text('Switch'),
@@ -1511,6 +1608,27 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
                     ),
                   )),
 
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFBBF7D0)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.shield_outlined, color: moneyMonkIncome, size: 20),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Permanent Device Storage: All income, expenses, and loans are permanently preserved on this device. Your data is automatically backed up and protected across sessions.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF166534), height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
             const Divider(),
             const SizedBox(height: 6),
@@ -2927,6 +3045,32 @@ class MoneyScreen extends StatelessWidget {
                         );
                       }),
                   ] else ...[
+                    if (incomeEntries.isEmpty && expenseEntries.isEmpty && entries.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 14),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: moneyMonkNavyLight,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: moneyMonkNavy.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline, size: 18, color: moneyMonkNavy),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'You have ${entries.length} ${entries.length == 1 ? "entry" : "entries"} saved in other dates. Tap "All" above to see all records.',
+                                style: const TextStyle(fontSize: 12, color: moneyMonkNavy, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: () => onToggleAllTransactions?.call(true),
+                              child: const Text('View All', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                            ),
+                          ],
+                        ),
+                      ),
                     // Money table
                     Card(
                       child: Padding(

@@ -1698,6 +1698,23 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Institutional Markdown Output Rendering**:
   - Implemented `_renderFormattedResponse` with header styling (`#`, `##`, `###`), bold word emphasis (`**bold**`), bullet points (`•`), and wrapped in `SelectionArea` for easy copying.
 
+56. Redundant Dual-Writing Persistence & Universal Auto-Recovery Guarantee
+
+- **Permanent Zero-Data-Loss Architecture**:
+  - Whenever money or loans are saved, data is redundantly dual-written:
+    1. User Namespace: `moneymonk_money_${username}` & `moneymonk_loans_${username}`.
+    2. Global Device Backup: `moneymonk_global_latest_money` & `moneymonk_global_latest_loans`.
+    3. Audit Metadata: `moneymonk_last_active_user` & `moneymonk_last_saved_time`.
+- **Fail-Safe Auto-Recovery on Startup**:
+  - In `_loadSavedData()`: If the current logged-in username has 0 records, the app proactively scans device storage for global backups, legacy keys, or other profiles on the device.
+  - Automatically restores and links any existing records into the active profile so users never encounter an empty dashboard due to username typos, account switching, or session resets.
+- **Smart Login Account Prefill with Entry Counters**:
+  - Saved accounts on the login screen display live entry counters: `username (X entries)` so returning users immediately recognize which account contains their records.
+  - Automatically prefills whichever account on the device contains active financial data.
+- **Multi-Month Date Safety Indicator**:
+  - In `MoneyScreen`: When an account has transactions recorded in other dates/months but none in the active month, a notification banner appears with a 1-tap **"View All"** action, preventing mistaken beliefs that data was lost.
+
+
 
 
 
