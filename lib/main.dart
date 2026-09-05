@@ -113,6 +113,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _isBusy = true;
   String? _error;
   String? _currentUser;
+  String? _notFoundUsername;
   List<String> _savedAccounts = [];
 
   @override
@@ -124,10 +125,19 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _restoreSession() async {
     final preferences = await SharedPreferences.getInstance();
     final users = jsonDecode(preferences.getString('moneymonk_users') ?? '{}') as Map<String, dynamic>;
+    final lastUser = preferences.getString('moneymonk_last_user');
+    final currentUser = preferences.getString('moneymonk_current_user');
     if (!mounted) return;
     setState(() {
       _savedAccounts = users.keys.toList();
-      _currentUser = preferences.getString('moneymonk_current_user');
+      _currentUser = currentUser;
+      if (currentUser == null) {
+        if (lastUser != null && lastUser.isNotEmpty) {
+          _usernameController.text = lastUser;
+        } else if (_savedAccounts.isNotEmpty) {
+          _usernameController.text = _savedAccounts.first;
+        }
+      }
       _isBusy = false;
     });
   }
@@ -140,11 +150,17 @@ class _LoginPageState extends State<LoginPage> {
     final username = _usernameController.text.trim().toLowerCase();
     final password = _passwordController.text;
     if (username.length < 3) {
-      setState(() => _error = 'Username must be at least 3 characters.');
+      setState(() {
+        _error = 'Username must be at least 3 characters.';
+        _notFoundUsername = null;
+      });
       return;
     }
     if (password.length < 6) {
-      setState(() => _error = 'Password must be at least 6 characters.');
+      setState(() {
+        _error = 'Password must be at least 6 characters.';
+        _notFoundUsername = null;
+      });
       return;
     }
     final preferences = await SharedPreferences.getInstance();
@@ -152,7 +168,10 @@ class _LoginPageState extends State<LoginPage> {
     final hash = _hashPassword(username, password);
     if (_isSignup) {
       if (users.containsKey(username)) {
-        setState(() => _error = 'That username already exists.');
+        setState(() {
+          _error = 'That username already exists.';
+          _notFoundUsername = null;
+        });
         return;
       }
       users[username] = hash;
@@ -167,13 +186,30 @@ class _LoginPageState extends State<LoginPage> {
       }
       await preferences.remove('moneymonk_money');
       await preferences.remove('moneymonk_loans');
-    } else if (users[username] != hash) {
-      setState(() => _error = 'Username or password is incorrect.');
-      return;
+    } else {
+      if (!users.containsKey(username)) {
+        setState(() {
+          _notFoundUsername = username;
+          _error = "Account '$username' was not found on this device/browser.";
+        });
+        return;
+      }
+      if (users[username] != hash) {
+        setState(() {
+          _error = 'Incorrect password for "$username". Use "Forgot Password?" below to reset.';
+          _notFoundUsername = null;
+        });
+        return;
+      }
     }
     await preferences.setString('moneymonk_current_user', username);
+    await preferences.setString('moneymonk_last_user', username);
     if (!mounted) return;
-    setState(() => _currentUser = username);
+    setState(() {
+      _currentUser = username;
+      _notFoundUsername = null;
+      _error = null;
+    });
   }
 
   void _showForgotPasswordDialog(BuildContext context) {
@@ -389,6 +425,47 @@ class _LoginPageState extends State<LoginPage> {
                   if (_error != null) ...[
                     const SizedBox(height: 12),
                     Text(_error!, style: const TextStyle(color: moneyMonkError)),
+                  ],
+                  if (_notFoundUsername != null && !_isSignup) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: moneyMonkNavyLight,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: moneyMonkNavy.withValues(alpha: 0.2)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'First time logging in as "$_notFoundUsername" on this browser?',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: moneyMonkNavy),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Accounts on this web app are stored per browser. You can create this account right now using your entered password:',
+                            style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.person_add_alt_1, size: 16),
+                              label: Text('Create "$_notFoundUsername" & Sign In'),
+                              onPressed: () async {
+                                setState(() {
+                                  _isSignup = true;
+                                  _error = null;
+                                  _notFoundUsername = null;
+                                });
+                                await _submit();
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                   const SizedBox(height: 20),
                   SizedBox(width: double.infinity, child: FilledButton(onPressed: _submit, child: Text(_isSignup ? 'Sign up' : 'Sign in'))),
@@ -903,6 +980,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
 
   Future<void> _signOut() async {
     final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('moneymonk_last_user', widget.username);
     await preferences.remove('moneymonk_current_user');
     if (mounted) {
       Navigator.of(context).pushAndRemoveUntil(
@@ -1800,7 +1878,7 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
 
     setState(() {
       _isAskingGemini = true;
-      _answer = 'Gemini (${_tier == AiTier.free ? "Free Tier" : "Paid / Cloud Tier"}) is analyzing your finances...';
+      _answer = 'Firebase AI (${_tier == AiTier.free ? "Free Tier" : "Paid / Cloud Tier"}) is analyzing your finances...';
     });
 
     final balance = widget.monthlyIncome - widget.monthlyExpense;
@@ -1814,7 +1892,7 @@ class _MoneyMonkAdvisorState extends State<_MoneyMonkAdvisor> {
       '- ${l.name}: Outstanding ${_formatCurrency(l.outstandingAmountInPaise)}, EMI ${_formatCurrency(l.emiInPaise)}${l.extraEmiInPaise > 0 ? " + Extra EMI ${_formatCurrency(l.extraEmiInPaise)}" : ""}, Interest ${l.interestRatePerAnnum}% p.a.'
     ).join('\n');
 
-    final systemPrompt = '''You are the MoneyMonk AI Financial Advisor.
+    final systemPrompt = '''You are the MoneyMonk Financial Advisor, powered by Firebase AI & Google Gemini.
 You provide clear, friendly, realistic, and highly practical financial advice based strictly on the user's supplied figures.
 All amounts are in Indian Rupees (₹).
 
@@ -1841,7 +1919,7 @@ User Query: $effectiveQuestion''';
 
     try {
       http.Response? response;
-      final modelsToTry = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+      final modelsToTry = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3.6-flash'];
 
       for (final model in modelsToTry) {
         response = await http.post(
@@ -1985,7 +2063,7 @@ User Query: $effectiveQuestion''';
                                 children: [
                                   Row(
                                     children: [
-                                      Text('Free Tier (Google AI Studio)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                                      Text('Free Tier (Firebase AI / Gemini)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
                                       SizedBox(width: 8),
                                       Chip(
                                         label: Text('100% Free', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: moneyMonkIncome)),
@@ -1997,7 +2075,7 @@ User Query: $effectiveQuestion''';
                                   ),
                                   SizedBox(height: 4),
                                   Text(
-                                    '15 Requests/Min • 1,500 Requests/Day • Gemini 2.0 Flash\nNo credit card required. Free forever for personal use.',
+                                    '15 Requests/Min • 1,500 Requests/Day • Gemini Flash\nZero billing required. 100% Free forever for personal financial insights.',
                                     style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
                                   ),
                                 ],
@@ -2081,7 +2159,7 @@ User Query: $effectiveQuestion''';
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          dialogTier == AiTier.free ? 'Google AI Studio API Key (Free):' : 'Google Cloud / Gemini API Key:',
+                          dialogTier == AiTier.free ? 'Google AI Studio / Firebase AI Key:' : 'Google Cloud / Gemini API Key:',
                           style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                         ),
                         if (dialogKeyController.text.isNotEmpty)
@@ -2176,7 +2254,7 @@ User Query: $effectiveQuestion''';
                   children: [
                     const Icon(Icons.auto_awesome, color: moneyMonkNavy, size: 22),
                     const SizedBox(width: 8),
-                    const Text('MoneyMonk AI Advisor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                    const Text('Firebase AI Financial Advisor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
                   ],
                 ),
                 InkWell(
@@ -2214,7 +2292,7 @@ User Query: $effectiveQuestion''';
             const SizedBox(height: 6),
             Text(
               _tier == AiTier.free 
-                  ? 'Powered by Gemini 2.0 Flash (100% Free • 1,500 req/day)'
+                  ? 'Powered by Firebase AI & Gemini Flash (100% Free • 1,500 req/day • Zero Billing)'
                   : 'Powered by Gemini Dedicated Cloud Tier (Private & High Quota)',
               style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
             ),

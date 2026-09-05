@@ -1628,4 +1628,28 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
 - **Cashflow Health Badge**:
   - Automatically identifies whether monthly cash flow is in Surplus or Deficit.
 
+52. Firebase AI (Gemini Flash) Assistant Integration Specification
+
+- **Provider & Model Architecture**:
+  - Connected via the **Gemini Developer API** provider supported by Firebase AI Logic.
+  - Prioritizes official Firebase AI models in sequence: `gemini-flash-latest`, `gemini-2.5-flash`, `gemini-3.6-flash`.
+- **Cost & Quota Structure**:
+  - **100% Free Forever**: Operates under Google AI / Firebase AI Developer API free tier limits (15 RPM, 1,500 RPD) with zero billing or credit card required for standard financial assistance.
+  - Zero-friction default key injection via `--dart-define=GEMINI_API_KEY`.
+- **Branding & User Controls**:
+  - Displayed prominently as **Firebase AI Financial Advisor**.
+  - Includes instant 1-tap prompts: Financial Health Audit, Debt Payoff Plan, Reduce Expenses.
+  - Allows power/enterprise users to switch to Paid / Google Cloud Tier with dedicated API keys and organization accounts.
+
+53. Cross-Browser Account Recovery & Smart Login Resilience
+
+- **Local Storage Isolation Context**:
+  - Single Page Web Apps store credentials in browser `localStorage`.
+  - Accounts created on one domain (e.g. `localhost`), browser (e.g. Chrome vs Safari), or incognito window are isolated by browser origin boundaries.
+- **Smart Login & 1-Tap Account Creation**:
+  - If a user inputs an unrecognized username on "Sign in", the app avoids vague "invalid credentials" errors and clearly clarifies: `"Account '<username>' was not found on this device/browser."`
+  - Presents a 1-tap **"Create '<username>' & Sign In"** action that immediately registers and logs in the user with their supplied password without re-typing.
+- **Last-User Prefill**:
+  - Tracks `moneymonk_last_user` so returning users immediately see their username pre-filled even after signing out or restarting their browser session.
+
 
