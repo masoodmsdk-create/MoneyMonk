@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'firestore_service.dart';
+
 const Color moneyMonkNavy = Color(0xFF1E3A5F);
 const Color moneyMonkNavyLight = Color(0xFFEAF1F8);
 const Color moneyMonkBackground = Color(0xFFF7F9FB);
@@ -23,7 +25,9 @@ const Color moneyMonkError = Color(0xFFB91C1C);
 // Default Free Tier Gemini API key (injected securely via --dart-define=GEMINI_API_KEY)
 const String defaultFreeGeminiApiKey = String.fromEnvironment('GEMINI_API_KEY');
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await FirestoreService.instance.ensureInitialized();
   runApp(const MoneyMonkApp());
 }
 
@@ -1158,30 +1162,73 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         }
       }
 
-      // 1. Check user-specific storage keys
       final moneyKey = 'moneymonk_money_${widget.username}';
       final loansKey = 'moneymonk_loans_${widget.username}';
-      addMoneyFromRaw(preferences.getString(moneyKey));
-      addLoansFromRaw(preferences.getString(loansKey));
+      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+      final isDeleted = preferences.getBool(tombstoneKey) ?? false;
 
-      // 2. Check redundant global device backups
-      addMoneyFromRaw(preferences.getString('moneymonk_global_latest_money'));
-      addLoansFromRaw(preferences.getString('moneymonk_global_latest_loans'));
+      // 1. Check local user-specific storage keys (if not previously wiped via Delete All Data)
+      if (!isDeleted) {
+        addMoneyFromRaw(preferences.getString(moneyKey));
+        addLoansFromRaw(preferences.getString(loansKey));
 
-      // 3. Check legacy unnamespaced keys
-      addMoneyFromRaw(preferences.getString('moneymonk_money'));
-      addLoansFromRaw(preferences.getString('moneymonk_loans'));
+        // If local user key was empty, check redundant global device backups
+        if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
+          addMoneyFromRaw(preferences.getString('moneymonk_global_latest_money'));
+          addLoansFromRaw(preferences.getString('moneymonk_global_latest_loans'));
+          addMoneyFromRaw(preferences.getString('moneymonk_money'));
+          addLoansFromRaw(preferences.getString('moneymonk_loans'));
 
-      // 4. DEEP SCAN: Check every saved profile key on this browser / device
-      for (final key in preferences.getKeys()) {
-        if (key.startsWith('moneymonk_money_')) {
-          addMoneyFromRaw(preferences.getString(key));
-        } else if (key.startsWith('moneymonk_loans_')) {
-          addLoansFromRaw(preferences.getString(key));
+          // Deep scan remaining profile keys as fallback
+          for (final key in preferences.getKeys()) {
+            if (key.startsWith('moneymonk_money_')) {
+              addMoneyFromRaw(preferences.getString(key));
+            } else if (key.startsWith('moneymonk_loans_')) {
+              addLoansFromRaw(preferences.getString(key));
+            }
+          }
         }
       }
 
-      // If data was recovered or loaded, mirror it across all keys immediately
+      // Fast optimistic render from local storage
+      if (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _moneyEntries.clear();
+            _moneyEntries.addAll(loadedMoney);
+            _loanEntries.clear();
+            _loanEntries.addAll(loadedLoans);
+          });
+        }
+      }
+
+      // 2. Fetch authoritative records from Cloud Firestore
+      final uid = FirestoreService.instance.getUid(widget.username);
+      List<MoneyEntry> cloudMoney = [];
+      List<LoanEntry> cloudLoans = [];
+      try {
+        cloudMoney = await FirestoreService.instance.loadMoney(uid);
+        cloudLoans = await FirestoreService.instance.loadLoans(uid);
+      } catch (e) {
+        debugPrint('Firestore load notice: $e');
+      }
+
+      if (cloudMoney.isNotEmpty || cloudLoans.isNotEmpty) {
+        // Cloud records found: Firestore is the primary source of truth!
+        loadedMoney.clear();
+        loadedMoney.addAll(cloudMoney);
+        loadedLoans.clear();
+        loadedLoans.addAll(cloudLoans);
+        if (isDeleted) {
+          await preferences.remove(tombstoneKey);
+        }
+      } else if (!isDeleted && (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty)) {
+        // Local records exist but cloud is empty -> Deterministic one-time migration to Firestore
+        debugPrint('Migrating ${loadedMoney.length} money and ${loadedLoans.length} loans to Firestore for $uid');
+        await FirestoreService.instance.batchSaveAll(uid, loadedMoney, loadedLoans);
+      }
+
+      // 3. Mirror updated authoritative state to local storage
       if (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty) {
         final moneyJson = jsonEncode(loadedMoney.map((e) => e.toJson()).toList());
         final loansJson = jsonEncode(loadedLoans.map((e) => e.toJson()).toList());
@@ -1216,11 +1263,15 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final moneyJson = jsonEncode(_moneyEntries.map((entry) => entry.toJson()).toList());
       final loansJson = jsonEncode(_loanEntries.map((entry) => entry.toJson()).toList());
       
+      // Clear tombstone when user actively saves new or updated records
+      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+      await preferences.remove(tombstoneKey);
+
       // 1. User namespace
       final s1 = await preferences.setString('moneymonk_money_${widget.username}', moneyJson);
       final s2 = await preferences.setString('moneymonk_loans_${widget.username}', loansJson);
       
-      // 2. Redundant global device backups (guarantees data survives across any account switches/typos/sessions)
+      // 2. Redundant global device backups
       await preferences.setString('moneymonk_global_latest_money', moneyJson);
       await preferences.setString('moneymonk_global_latest_loans', loansJson);
       await preferences.setString('moneymonk_money', moneyJson);
@@ -1228,7 +1279,14 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       await preferences.setString('moneymonk_last_active_user', widget.username);
       await preferences.setString('moneymonk_last_saved_time', DateTime.now().toIso8601String());
 
-      debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length}) + global backup');
+      // 3. Persist to Cloud Firestore (authoritative permanent store)
+      final uid = FirestoreService.instance.getUid(widget.username);
+      FirestoreService.instance.batchSaveAll(uid, _moneyEntries, _loanEntries).catchError((e) {
+        debugPrint('Firestore background sync notice: $e');
+        return false;
+      });
+
+      debugPrint('Saved data for ${widget.username}: money=$s1 (${_moneyEntries.length}), loans=$s2 (${_loanEntries.length}) + Firestore cloud persistence');
       return s1 && s2;
     } catch (e) {
       debugPrint('Error in _saveData: $e');
@@ -1329,6 +1387,8 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
     ).then((delete) async {
       if (delete == true) {
+        final uid = FirestoreService.instance.getUid(widget.username);
+        FirestoreService.instance.deleteMoney(uid, entry.id);
         setState(() {
           _moneyEntries.removeWhere((e) => e.id == entry.id);
         });
@@ -1419,6 +1479,8 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       ),
     ).then((delete) async {
       if (delete == true) {
+        final uid = FirestoreService.instance.getUid(widget.username);
+        FirestoreService.instance.deleteLoan(uid, entry.id);
         setState(() {
           _loanEntries.removeWhere((e) => e.id == entry.id);
         });
@@ -1433,6 +1495,49 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         }
       }
     });
+  }
+
+  Future<void> _handleDeleteAllData() async {
+    try {
+      final uid = FirestoreService.instance.getUid(widget.username);
+      // 1. Permanently wipe cloud Firestore documents
+      await FirestoreService.instance.deleteAllData(uid);
+
+      final preferences = await SharedPreferences.getInstance();
+      final moneyKey = 'moneymonk_money_${widget.username}';
+      final loansKey = 'moneymonk_loans_${widget.username}';
+      final tombstoneKey = 'moneymonk_deleted_${widget.username}';
+
+      // 2. Remove user-specific keys and record tombstone
+      await preferences.remove(moneyKey);
+      await preferences.remove(loansKey);
+      await preferences.setBool(tombstoneKey, true);
+
+      // 3. Clear redundant device backup if it belonged to this user
+      final lastActiveUser = preferences.getString('moneymonk_last_active_user');
+      if (lastActiveUser == widget.username) {
+        await preferences.remove('moneymonk_global_latest_money');
+        await preferences.remove('moneymonk_global_latest_loans');
+        await preferences.remove('moneymonk_money');
+        await preferences.remove('moneymonk_loans');
+      }
+
+      if (mounted) {
+        setState(() {
+          _moneyEntries.clear();
+          _loanEntries.clear();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('All cloud and local data permanently deleted.'),
+            backgroundColor: moneyMonkNavy,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error in _handleDeleteAllData: $e');
+    }
   }
 
   void _showUserManagementSheet(BuildContext context) {
@@ -1620,6 +1725,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         username: widget.username,
         moneyEntries: _moneyEntries,
         loanEntries: _loanEntries,
+        onDeleteAllData: _handleDeleteAllData,
         onImport: (newMoney, newLoans) async {
           setState(() {
             final seenMoney = _moneyEntries.map((e) => e.id).toSet();
@@ -2085,6 +2191,7 @@ class _BackupSheet extends StatefulWidget {
     required this.username,
     required this.moneyEntries,
     required this.loanEntries,
+    required this.onDeleteAllData,
     required this.onImport,
     required this.onScanRecover,
     required this.onLoadTemplate,
@@ -2093,6 +2200,7 @@ class _BackupSheet extends StatefulWidget {
   final String username;
   final List<MoneyEntry> moneyEntries;
   final List<LoanEntry> loanEntries;
+  final Future<void> Function() onDeleteAllData;
   final Future<void> Function(List<MoneyEntry>, List<LoanEntry>) onImport;
   final Future<void> Function() onScanRecover;
   final Future<void> Function() onLoadTemplate;
@@ -2103,6 +2211,99 @@ class _BackupSheet extends StatefulWidget {
 
 class _BackupSheetState extends State<_BackupSheet> {
   bool _isScanning = false;
+
+  void _confirmDeleteAll(BuildContext context) {
+    final textController = TextEditingController();
+    bool isDeleteEnabled = false;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: moneyMonkError, size: 28),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Delete All Financial Data?',
+                      style: TextStyle(color: moneyMonkError, fontWeight: FontWeight.bold, fontSize: 18),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'This will permanently delete ALL ${widget.moneyEntries.length} money records and ${widget.loanEntries.length} loans for account "${widget.username}".',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    '• Permanent cloud deletion on Cloud Firestore\n• Local device caches and backups wiped\n• Local recovery scanner will NOT resurrect deleted data\n• Action cannot be undone',
+                    style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText, height: 1.4),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'To confirm, type DELETE below:',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: moneyMonkPrimaryText),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: textController,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      hintText: 'DELETE',
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: moneyMonkError, width: 2),
+                      ),
+                    ),
+                    onChanged: (val) {
+                      final matches = val.trim() == 'DELETE';
+                      if (matches != isDeleteEnabled) {
+                        setDialogState(() {
+                          isDeleteEnabled = matches;
+                        });
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: moneyMonkError,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: !isDeleteEnabled
+                      ? null
+                      : () async {
+                          Navigator.pop(dialogContext);
+                          Navigator.pop(context);
+                          await widget.onDeleteAllData();
+                        },
+                  child: const Text('Delete Permanently'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
 
   void _exportJson() {
     final data = {
@@ -2262,12 +2463,12 @@ class _BackupSheetState extends State<_BackupSheet> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.check_circle_outline, color: moneyMonkIncome, size: 22),
+                  const Icon(Icons.cloud_done_outlined, color: moneyMonkIncome, size: 24),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'All your entries are permanently saved on this device. Currently preserving ${widget.moneyEntries.length} money items & ${widget.loanEntries.length} loans.',
-                      style: const TextStyle(fontSize: 13, color: Color(0xFF166534), fontWeight: FontWeight.w500),
+                      'Cloud Persistent (Cloud Firestore) + Local Safe Caching.\nPreserving ${widget.moneyEntries.length} money items & ${widget.loanEntries.length} loans for ${widget.username}.',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFF166534), fontWeight: FontWeight.w500, height: 1.3),
                     ),
                   ),
                 ],
@@ -2331,6 +2532,48 @@ class _BackupSheetState extends State<_BackupSheet> {
                       },
                     ),
                   ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFFFECACA)),
+              ),
+              color: const Color(0xFFFEF2F2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: moneyMonkError, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Danger Zone',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: moneyMonkError,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.delete_forever_outlined, color: moneyMonkError),
+                    title: const Text(
+                      'Delete All Data (Cloud & Local)',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkError),
+                    ),
+                    subtitle: const Text(
+                      'Permanently wipe all records from Cloud Firestore and device storage',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    onTap: () => _confirmDeleteAll(context),
+                  ),
                 ],
               ),
             ),

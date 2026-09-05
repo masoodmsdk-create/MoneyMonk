@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // MoneyMonk user financial records
+    // User data is partitioned by userId. When Firebase Auth is present, request.auth.uid must match userId.
+    match /users/{userId}/{document=**} {
+      allow read, write, delete: if request.auth != null ? request.auth.uid == userId : true;
+    }
+  }
+}
+

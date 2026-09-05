@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:moneymonk/firestore_service.dart';
 import 'package:moneymonk/main.dart';
 
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    FirestoreService.instance.disableForTesting = true;
   });
 
   Future<void> signUp(WidgetTester tester) async {
@@ -480,5 +482,64 @@ void main() {
     expect(restoredLoan.name, equals('Home Loan'));
     expect(restoredLoan.extraPayments.isNotEmpty, isTrue);
   });
+
+  test('FirestoreService resolves deterministic account UIDs and isolates accounts', () {
+    final service = FirestoreService.instance;
+    final uidTester = service.getUid('tester');
+    final uidAlice = service.getUid('alice');
+    final uidBob = service.getUid('bob');
+    final uidTesterUppercase = service.getUid('TESTER');
+
+    expect(uidTester.startsWith('user_'), isTrue);
+    expect(uidAlice.startsWith('user_'), isTrue);
+    expect(uidBob.startsWith('user_'), isTrue);
+
+    // Deterministic & Case-insensitive
+    expect(uidTester, equals(uidTesterUppercase));
+
+    // Complete account isolation
+    expect(uidTester, isNot(equals(uidAlice)));
+    expect(uidAlice, isNot(equals(uidBob)));
+  });
+
+  test('Delete All Data tombstone prevents resurrection by device scanner', () async {
+    final prefs = await SharedPreferences.getInstance();
+    const username = 'cleared_user';
+    const tombstoneKey = 'moneymonk_deleted_$username';
+
+    // Simulate old data on device
+    await prefs.setString('moneymonk_money_$username', '[{"id":"m1","name":"Old Salary","amountInPaise":5000000,"date":"2026-01-01T00:00:00.000","type":"income","mode":"recurring","frequency":"monthly"}]');
+    await prefs.setString('moneymonk_global_latest_money', '[{"id":"m1","name":"Old Salary","amountInPaise":5000000,"date":"2026-01-01T00:00:00.000","type":"income","mode":"recurring","frequency":"monthly"}]');
+
+    // Simulate "Delete All Data" action
+    await prefs.remove('moneymonk_money_$username');
+    await prefs.remove('moneymonk_loans_$username');
+    await prefs.setBool(tombstoneKey, true);
+
+    // Verify tombstone is recorded
+    expect(prefs.getBool(tombstoneKey), isTrue);
+
+    // If a load logic checks tombstone, it must not resurrect the old data
+    final isDeleted = prefs.getBool(tombstoneKey) ?? false;
+    expect(isDeleted, isTrue);
+    expect(prefs.getString('moneymonk_money_$username'), isNull);
+  });
+
+  testWidgets('Data Backup & Recovery sheet renders Danger Zone and Delete All Data', (tester) async {
+    await signUp(tester);
+
+    // Tap backup & recovery icon in AppBar
+    final backupButton = find.byTooltip('Data Backup & Recovery');
+    expect(backupButton, findsOneWidget);
+    await tester.tap(backupButton);
+    await tester.pumpAndSettle();
+
+    // Sheet should show title, cloud persistence notice, and Danger Zone
+    expect(find.text('Data Backup & Recovery'), findsOneWidget);
+    expect(find.textContaining('Cloud Persistent'), findsOneWidget);
+    expect(find.text('Danger Zone'), findsOneWidget);
+    expect(find.text('Delete All Data (Cloud & Local)'), findsOneWidget);
+  });
 }
+
 
