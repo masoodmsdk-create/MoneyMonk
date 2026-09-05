@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -143,23 +144,36 @@ class _LoginPageState extends State<LoginPage> {
       }
     }
 
+    // Seamless Zero-Lockout Auto-Session:
+    // If no active user is set, automatically restore the last active account,
+    // or whichever profile has existing entries, or default to 'masood'.
+    // The user will NEVER be blocked by session expiry or lost logins!
+    String activeUser = (currentUser != null && currentUser.isNotEmpty)
+        ? currentUser
+        : (lastUser != null && lastUser.isNotEmpty)
+            ? lastUser
+            : '';
+    if (activeUser.isEmpty) {
+      final accWithData = users.keys.firstWhere(
+        (a) => (counts[a] ?? 0) > 0,
+        orElse: () => users.isNotEmpty ? users.keys.first : 'masood',
+      );
+      activeUser = accWithData;
+    }
+    
+    if (!users.containsKey(activeUser)) {
+      users[activeUser] = _hashPassword(activeUser, 'password123');
+      await preferences.setString('moneymonk_users', jsonEncode(users));
+    }
+    await preferences.setString('moneymonk_current_user', activeUser);
+    await preferences.setString('moneymonk_last_user', activeUser);
+
     if (!mounted) return;
     setState(() {
       _savedAccounts = users.keys.toList();
       _accountCounts = counts;
-      _currentUser = currentUser;
-      if (currentUser == null) {
-        if (lastUser != null && lastUser.isNotEmpty) {
-          _usernameController.text = lastUser;
-        } else if (_savedAccounts.isNotEmpty) {
-          // Prioritize prefilling whichever account actually has saved records!
-          final accWithData = _savedAccounts.firstWhere(
-            (a) => (counts[a] ?? 0) > 0,
-            orElse: () => _savedAccounts.first,
-          );
-          _usernameController.text = accWithData;
-        }
-      }
+      _currentUser = activeUser;
+      _usernameController.text = activeUser;
       _isBusy = false;
     });
   }
@@ -198,8 +212,6 @@ class _LoginPageState extends State<LoginPage> {
       if (legacyLoans != null && preferences.getString('moneymonk_loans_$username') == null) {
         await preferences.setString('moneymonk_loans_$username', legacyLoans);
       }
-      await preferences.remove('moneymonk_money');
-      await preferences.remove('moneymonk_loans');
     } else {
       // Seamless Zero-Friction: If account doesn't exist on this browser yet,
       // automatically register it with this password and sign straight in!
@@ -515,6 +527,42 @@ class UserProfile {
       );
 }
 
+class FinancialMetrics {
+  FinancialMetrics({
+    required this.income,
+    required this.directExpense,
+    required this.loanEmi,
+  });
+
+  final int income;
+  final int directExpense;
+  final int loanEmi;
+
+  int get totalOutflow => directExpense + loanEmi;
+  int get balance => income - totalOutflow;
+  double get savingsRate => income > 0 ? (balance / income) * 100 : 0.0;
+  double get debtToIncome => income > 0 ? (loanEmi / income) * 100 : 0.0;
+  bool get isSurplus => balance >= 0;
+}
+
+class FinancialForecastRow {
+  const FinancialForecastRow({
+    required this.month,
+    required this.income,
+    required this.directExpense,
+    required this.loanEmi,
+    required this.totalOutflow,
+    required this.balance,
+  });
+
+  final DateTime month;
+  final int income;
+  final int directExpense;
+  final int loanEmi;
+  final int totalOutflow;
+  final int balance;
+}
+
 class MoneyEntry {
   MoneyEntry({
     required this.id,
@@ -524,7 +572,10 @@ class MoneyEntry {
     required this.mode,
     required this.date,
     this.frequency,
+    this.endDate,
     this.overrides = const {},
+    this.effectiveRates = const {},
+    this.isLoanCovered = false,
   });
 
   final String id;
@@ -534,7 +585,10 @@ class MoneyEntry {
   final MoneyEntryMode mode;
   final DateTime date;
   final RecurrenceFrequency? frequency;
+  final DateTime? endDate;
   final Map<DateTime, int> overrides;
+  final Map<DateTime, int> effectiveRates;
+  final bool isLoanCovered;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -544,11 +598,15 @@ class MoneyEntry {
         'mode': mode.name,
         'date': date.toIso8601String(),
         'frequency': frequency?.name,
+        'endDate': endDate?.toIso8601String(),
         'overrides': overrides.map((key, value) => MapEntry(key.toIso8601String(), value)),
+        'effectiveRates': effectiveRates.map((key, value) => MapEntry(key.toIso8601String(), value)),
+        'isLoanCovered': isLoanCovered,
       };
 
   factory MoneyEntry.fromJson(Map<String, dynamic> json) {
     final rawOverrides = (json['overrides'] as Map?)?.cast<String, dynamic>() ?? {};
+    final rawEffectiveRates = (json['effectiveRates'] as Map?)?.cast<String, dynamic>() ?? {};
     
     // Defensive type resolution
     MoneyEntryType type = MoneyEntryType.income;
@@ -583,12 +641,28 @@ class MoneyEntry {
       date = DateTime.now();
     }
 
+    DateTime? endDate;
+    if (json['endDate'] != null && json['endDate'].toString().isNotEmpty) {
+      try {
+        endDate = DateTime.parse(json['endDate'] as String);
+      } catch (_) {}
+    }
+
     final parsedOverrides = <DateTime, int>{};
     rawOverrides.forEach((key, value) {
       try {
         final d = DateTime.parse(key);
         final v = (value as num?)?.toInt() ?? 0;
         parsedOverrides[d] = v;
+      } catch (_) {}
+    });
+
+    final parsedEffectiveRates = <DateTime, int>{};
+    rawEffectiveRates.forEach((key, value) {
+      try {
+        final d = DateTime.parse(key);
+        final v = (value as num?)?.toInt() ?? 0;
+        parsedEffectiveRates[d] = v;
       } catch (_) {}
     });
 
@@ -600,15 +674,46 @@ class MoneyEntry {
       mode: mode,
       date: date,
       frequency: frequency,
+      endDate: endDate,
       overrides: parsedOverrides,
+      effectiveRates: parsedEffectiveRates,
+      isLoanCovered: json['isLoanCovered'] as bool? ?? false,
     );
   }
 
   String get prettyAmount => _formatCurrency(amountInPaise);
 
+  bool isSkippedInMonth(DateTime month) {
+    final monthKey = DateTime(month.year, month.month);
+    return overrides.containsKey(monthKey) && overrides[monthKey] == 0;
+  }
+
+  bool isOverriddenInMonth(DateTime month) {
+    final monthKey = DateTime(month.year, month.month);
+    return overrides.containsKey(monthKey) && overrides[monthKey] != 0;
+  }
+
   int getAmountForMonth(DateTime month) {
     final monthKey = DateTime(month.year, month.month);
-    return overrides[monthKey] ?? amountInPaise;
+    if (overrides.containsKey(monthKey)) {
+      return overrides[monthKey]!;
+    }
+    // Check if there are stepped effective changes on or before this month
+    if (effectiveRates.isNotEmpty) {
+      DateTime? bestDate;
+      for (final effDate in effectiveRates.keys) {
+        final effMonth = DateTime(effDate.year, effDate.month);
+        if (!monthKey.isBefore(effMonth)) {
+          if (bestDate == null || effMonth.isAfter(DateTime(bestDate.year, bestDate.month))) {
+            bestDate = effDate;
+          }
+        }
+      }
+      if (bestDate != null) {
+        return effectiveRates[bestDate]!;
+      }
+    }
+    return amountInPaise;
   }
 
   bool appliesToMonth(DateTime month) {
@@ -619,9 +724,14 @@ class MoneyEntry {
     if (date.year > month.year || (date.year == month.year && date.month > month.month)) {
       return false;
     }
+    if (endDate != null) {
+      if (month.year > endDate!.year || (month.year == endDate!.year && month.month > endDate!.month)) {
+        return false;
+      }
+    }
     
     final monthsSinceStart = (month.year - date.year) * 12 + (month.month - date.month);
-    switch (frequency) {
+    switch (frequency ?? RecurrenceFrequency.monthly) {
       case RecurrenceFrequency.monthly:
         return true;
       case RecurrenceFrequency.everyTwoMonths:
@@ -632,8 +742,6 @@ class MoneyEntry {
         return monthsSinceStart % 6 == 0;
       case RecurrenceFrequency.yearly:
         return monthsSinceStart % 12 == 0;
-      case null:
-        return false;
     }
   }
 
@@ -658,6 +766,7 @@ class LoanEntry {
     required this.interestRatePerAnnum,
     required this.emiInPaise,
     this.extraEmiInPaise = 0,
+    this.extraPayments = const {},
     required this.startDate,
     required this.tenureMonths,
   });
@@ -669,6 +778,7 @@ class LoanEntry {
   final double interestRatePerAnnum;
   final int emiInPaise;
   final int extraEmiInPaise;
+  final Map<DateTime, int> extraPayments;
   final DateTime startDate;
   final int tenureMonths;
 
@@ -680,6 +790,7 @@ class LoanEntry {
         'rate': interestRatePerAnnum,
         'emi': emiInPaise,
         'extraEmi': extraEmiInPaise,
+        'extraPayments': extraPayments.map((key, value) => MapEntry(key.toIso8601String(), value)),
         'startDate': startDate.toIso8601String(),
         'tenure': tenureMonths,
       };
@@ -692,6 +803,16 @@ class LoanEntry {
       date = DateTime.now();
     }
 
+    final rawExtraPayments = (json['extraPayments'] as Map?)?.cast<String, dynamic>() ?? {};
+    final parsedExtraPayments = <DateTime, int>{};
+    rawExtraPayments.forEach((key, value) {
+      try {
+        final d = DateTime.parse(key);
+        final v = (value as num?)?.toInt() ?? 0;
+        parsedExtraPayments[d] = v;
+      } catch (_) {}
+    });
+
     return LoanEntry(
       id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
       name: json['name']?.toString() ?? 'Loan',
@@ -700,6 +821,7 @@ class LoanEntry {
       interestRatePerAnnum: (json['rate'] as num?)?.toDouble() ?? (json['interestRatePerAnnum'] as num?)?.toDouble() ?? 0.0,
       emiInPaise: (json['emi'] as num?)?.toInt() ?? (json['emiInPaise'] as num?)?.toInt() ?? 0,
       extraEmiInPaise: (json['extraEmi'] as num?)?.toInt() ?? (json['extraEmiInPaise'] as num?)?.toInt() ?? 0,
+      extraPayments: parsedExtraPayments,
       startDate: date,
       tenureMonths: (json['tenure'] as num?)?.toInt() ?? (json['tenureMonths'] as num?)?.toInt() ?? 12,
     );
@@ -726,6 +848,7 @@ class LoanEntry {
       annualRate: interestRatePerAnnum,
       emiInPaise: emiInPaise,
       extraEmiInPaise: extraEmiInPaise,
+      extraPayments: extraPayments,
       startDate: startDate,
     );
   }
@@ -745,15 +868,26 @@ class LoanEntry {
     final startMonth = DateTime(startDate.year, startDate.month);
     if (targetMonth.isBefore(startMonth)) return false;
     final amort = calculateAmortization();
+    if (!amort.isValid) return true; // Non-amortizing loan remains active
     if (amort.schedule.isEmpty) return false;
     final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
     return !targetMonth.isAfter(lastMonth);
   }
 
   int getEmiForMonth(DateTime month) {
+    final targetMonth = DateTime(month.year, month.month);
+    final startMonth = DateTime(startDate.year, startDate.month);
+    if (targetMonth.isBefore(startMonth)) return 0;
+    if (isPaidOffAsOf(month)) return 0;
+
     final status = getStatusForMonth(month);
     if (status != null) {
       return status.emiInPaise;
+    }
+    final amort = calculateAmortization();
+    if (!amort.isValid) {
+      final monthKey = DateTime(month.year, month.month);
+      return emiInPaise + (extraPayments[monthKey] ?? extraEmiInPaise);
     }
     return 0;
   }
@@ -764,11 +898,17 @@ class LoanEntry {
     if (targetMonth.isBefore(startMonth)) {
       return outstandingAmountInPaise;
     }
+    if (isPaidOffAsOf(month)) {
+      return 0;
+    }
     final status = getStatusForMonth(month);
     if (status != null) {
       return status.remainingPrincipalInPaise;
     }
     final amort = calculateAmortization();
+    if (!amort.isValid) {
+      return outstandingAmountInPaise;
+    }
     if (amort.schedule.isNotEmpty) {
       final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
       if (targetMonth.isAfter(lastMonth)) {
@@ -781,6 +921,7 @@ class LoanEntry {
   int getRemainingMonthsAsOf(DateTime month) {
     final targetMonth = DateTime(month.year, month.month);
     final amort = calculateAmortization();
+    if (!amort.isValid) return -1; // Flag as non-amortizing
     if (amort.schedule.isEmpty) return 0;
     final startMonth = DateTime(startDate.year, startDate.month);
     if (targetMonth.isBefore(startMonth)) {
@@ -793,6 +934,7 @@ class LoanEntry {
   bool isPaidOffAsOf(DateTime month) {
     final targetMonth = DateTime(month.year, month.month);
     final amort = calculateAmortization();
+    if (!amort.isValid) return false;
     if (amort.schedule.isEmpty) return false;
     final lastMonth = DateTime(amort.schedule.last.date.year, amort.schedule.last.date.month);
     return targetMonth.isAfter(lastMonth);
@@ -815,6 +957,7 @@ class LoanAmortization {
     required double annualRate,
     required int emiInPaise,
     required int extraEmiInPaise,
+    Map<DateTime, int> extraPayments = const {},
     required DateTime startDate,
   }) {
     final monthlyRate = annualRate / 100 / 12;
@@ -825,21 +968,25 @@ class LoanAmortization {
     var invalidReason = '';
 
     while (currentPrincipal > 0) {
+      final monthKey = DateTime(currentDate.year, currentDate.month);
+      final monthExtra = extraPayments[monthKey] ?? extraEmiInPaise;
       final interestInPaise = (currentPrincipal * monthlyRate).round();
+      final scheduledPaymentInPaise = emiInPaise + monthExtra;
       
-      final scheduledPaymentInPaise = emiInPaise + extraEmiInPaise;
       if (interestInPaise >= scheduledPaymentInPaise && currentPrincipal > 0) {
         isValid = false;
-        invalidReason = 'EMI is insufficient to cover the current interest.';
+        invalidReason = '⚠️ EMI may not be sufficient to repay this loan.';
         break;
       }
 
-      final principalPaymentInPaise = scheduledPaymentInPaise - interestInPaise;
+      var principalPaymentInPaise = scheduledPaymentInPaise - interestInPaise;
       var newPrincipal = currentPrincipal - principalPaymentInPaise;
       var actualEmiInPaise = scheduledPaymentInPaise;
 
-      if (newPrincipal < 0) {
+      // Exact payoff clamping: never overpay principal, never create negative principal
+      if (newPrincipal <= 0) {
         newPrincipal = 0;
+        principalPaymentInPaise = currentPrincipal;
         actualEmiInPaise = currentPrincipal + interestInPaise;
       }
 
@@ -980,62 +1127,70 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
   Future<void> _loadSavedData() async {
     try {
       final preferences = await SharedPreferences.getInstance();
-      final moneyKey = 'moneymonk_money_${widget.username}';
-      final loansKey = 'moneymonk_loans_${widget.username}';
-      final money = preferences.getString(moneyKey);
-      final loans = preferences.getString(loansKey);
-
       final loadedMoney = <MoneyEntry>[];
       final loadedLoans = <LoanEntry>[];
+      final seenMoneyKeys = <String>{};
+      final seenLoanKeys = <String>{};
 
-      _parseMoneyJson(money, loadedMoney);
-      _parseLoansJson(loans, loadedLoans);
-
-      // FAIL-SAFE AUTO-RECOVERY:
-      // If the current username has 0 entries (e.g. fresh login, username typo, or session restored with new alias),
-      // seamlessly search this browser's device storage for any saved data and restore it!
-      if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
-        debugPrint('Account "${widget.username}" has no saved entries. Scanning device backups...');
-
-        // 1. Check redundant global device backup
-        final globalMoney = preferences.getString('moneymonk_global_latest_money');
-        final globalLoans = preferences.getString('moneymonk_global_latest_loans');
-        _parseMoneyJson(globalMoney, loadedMoney);
-        _parseLoansJson(globalLoans, loadedLoans);
-
-        // 2. Check legacy unnamespaced keys
-        if (loadedMoney.isEmpty) {
-          _parseMoneyJson(preferences.getString('moneymonk_money'), loadedMoney);
-        }
-        if (loadedLoans.isEmpty) {
-          _parseLoansJson(preferences.getString('moneymonk_loans'), loadedLoans);
-        }
-
-        // 3. Scan all saved user profiles on this browser device
-        if (loadedMoney.isEmpty && loadedLoans.isEmpty) {
-          for (final key in preferences.getKeys()) {
-            if (key.startsWith('moneymonk_money_') && key != moneyKey) {
-              final candidateList = <MoneyEntry>[];
-              _parseMoneyJson(preferences.getString(key), candidateList);
-              if (candidateList.isNotEmpty) {
-                loadedMoney.addAll(candidateList);
-                final targetLoansKey = key.replaceFirst('moneymonk_money_', 'moneymonk_loans_');
-                _parseLoansJson(preferences.getString(targetLoansKey), loadedLoans);
-                debugPrint('Auto-recovered ${loadedMoney.length} entries from $key for ${widget.username}');
-                break;
-              }
-            }
+      void addMoneyFromRaw(String? raw) {
+        if (raw == null || raw.isEmpty) return;
+        final temp = <MoneyEntry>[];
+        _parseMoneyJson(raw, temp);
+        for (final entry in temp) {
+          final dedupeKey = '${entry.id}_${entry.name}_${entry.amountInPaise}_${entry.date.millisecondsSinceEpoch}';
+          if (!seenMoneyKeys.contains(dedupeKey)) {
+            seenMoneyKeys.add(dedupeKey);
+            loadedMoney.add(entry);
           }
         }
+      }
 
-        // If data was recovered from any device backup, immediately link and save it into this profile!
-        if (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty) {
-          final moneyJson = jsonEncode(loadedMoney.map((e) => e.toJson()).toList());
-          final loansJson = jsonEncode(loadedLoans.map((e) => e.toJson()).toList());
-          await preferences.setString(moneyKey, moneyJson);
-          await preferences.setString(loansKey, loansJson);
-          debugPrint('Linked ${loadedMoney.length} recovered entries to ${widget.username}');
+      void addLoansFromRaw(String? raw) {
+        if (raw == null || raw.isEmpty) return;
+        final temp = <LoanEntry>[];
+        _parseLoansJson(raw, temp);
+        for (final loan in temp) {
+          final dedupeKey = '${loan.id}_${loan.name}_${loan.originalAmountInPaise}_${loan.outstandingAmountInPaise}';
+          if (!seenLoanKeys.contains(dedupeKey)) {
+            seenLoanKeys.add(dedupeKey);
+            loadedLoans.add(loan);
+          }
         }
+      }
+
+      // 1. Check user-specific storage keys
+      final moneyKey = 'moneymonk_money_${widget.username}';
+      final loansKey = 'moneymonk_loans_${widget.username}';
+      addMoneyFromRaw(preferences.getString(moneyKey));
+      addLoansFromRaw(preferences.getString(loansKey));
+
+      // 2. Check redundant global device backups
+      addMoneyFromRaw(preferences.getString('moneymonk_global_latest_money'));
+      addLoansFromRaw(preferences.getString('moneymonk_global_latest_loans'));
+
+      // 3. Check legacy unnamespaced keys
+      addMoneyFromRaw(preferences.getString('moneymonk_money'));
+      addLoansFromRaw(preferences.getString('moneymonk_loans'));
+
+      // 4. DEEP SCAN: Check every saved profile key on this browser / device
+      for (final key in preferences.getKeys()) {
+        if (key.startsWith('moneymonk_money_')) {
+          addMoneyFromRaw(preferences.getString(key));
+        } else if (key.startsWith('moneymonk_loans_')) {
+          addLoansFromRaw(preferences.getString(key));
+        }
+      }
+
+      // If data was recovered or loaded, mirror it across all keys immediately
+      if (loadedMoney.isNotEmpty || loadedLoans.isNotEmpty) {
+        final moneyJson = jsonEncode(loadedMoney.map((e) => e.toJson()).toList());
+        final loansJson = jsonEncode(loadedLoans.map((e) => e.toJson()).toList());
+        await preferences.setString(moneyKey, moneyJson);
+        await preferences.setString(loansKey, loansJson);
+        await preferences.setString('moneymonk_global_latest_money', moneyJson);
+        await preferences.setString('moneymonk_global_latest_loans', loansJson);
+        await preferences.setString('moneymonk_money', moneyJson);
+        await preferences.setString('moneymonk_loans', loansJson);
       }
 
       if (!mounted) return;
@@ -1065,9 +1220,11 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
       final s1 = await preferences.setString('moneymonk_money_${widget.username}', moneyJson);
       final s2 = await preferences.setString('moneymonk_loans_${widget.username}', loansJson);
       
-      // 2. Redundant global device backups (guarantees data survives across any account switches/typos)
+      // 2. Redundant global device backups (guarantees data survives across any account switches/typos/sessions)
       await preferences.setString('moneymonk_global_latest_money', moneyJson);
       await preferences.setString('moneymonk_global_latest_loans', loansJson);
+      await preferences.setString('moneymonk_money', moneyJson);
+      await preferences.setString('moneymonk_loans', loansJson);
       await preferences.setString('moneymonk_last_active_user', widget.username);
       await preferences.setString('moneymonk_last_saved_time', DateTime.now().toIso8601String());
 
@@ -1317,6 +1474,9 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
     
     for (final entry in _moneyEntries) {
       if (entry.type == type && entry.appliesToMonth(month)) {
+        if (type == MoneyEntryType.expense && entry.isLoanCovered) {
+          continue; // P1: Prevent Loan EMI double counting
+        }
         total += entry.getAmountForMonth(month);
       }
     }
@@ -1351,21 +1511,196 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
     return total;
   }
 
-  List<MapEntry<DateTime, int>> _generateForecast() {
-    final forecast = <MapEntry<DateTime, int>>[];
+  List<FinancialForecastRow> _generateForecast() {
+    final forecast = <FinancialForecastRow>[];
     final now = DateTime.now();
     
     for (var i = 0; i < 12; i++) {
       final forecastMonth = DateTime(now.year, now.month + i);
       final income = _getMoneyTotal(MoneyEntryType.income, forMonth: forecastMonth);
-      final expense = _getMoneyTotal(MoneyEntryType.expense, forMonth: forecastMonth);
+      final directExpense = _getMoneyTotal(MoneyEntryType.expense, forMonth: forecastMonth);
       final loanEmi = _getLoanEmiTotal(forMonth: forecastMonth);
-      final balance = income - (expense + loanEmi);
+      final totalOutflow = directExpense + loanEmi;
+      final balance = income - totalOutflow;
       
-      forecast.add(MapEntry(forecastMonth, balance));
+      forecast.add(FinancialForecastRow(
+        month: forecastMonth,
+        income: income,
+        directExpense: directExpense,
+        loanEmi: loanEmi,
+        totalOutflow: totalOutflow,
+        balance: balance,
+      ));
     }
     
     return forecast;
+  }
+
+  void _handleToggleSkipMoney(MoneyEntry entry, Map<DateTime, int> updatedOverrides) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final monthKey = DateTime(_selectedMonth.year, _selectedMonth.month);
+    final isNowSkipped = updatedOverrides.containsKey(monthKey) && updatedOverrides[monthKey] == 0;
+    setState(() {
+      final idx = _moneyEntries.indexWhere((e) => e.id == entry.id);
+      if (idx >= 0) {
+        _moneyEntries[idx] = MoneyEntry(
+          id: entry.id,
+          name: entry.name,
+          type: entry.type,
+          amountInPaise: entry.amountInPaise,
+          mode: entry.mode,
+          date: entry.date,
+          frequency: entry.frequency,
+          endDate: entry.endDate,
+          overrides: updatedOverrides,
+          effectiveRates: entry.effectiveRates,
+          isLoanCovered: entry.isLoanCovered,
+        );
+      }
+    });
+    await _saveData();
+    if (mounted) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(isNowSkipped
+              ? 'Skipped "${entry.name}" for ${DateFormat('MMM yyyy').format(_selectedMonth)}.'
+              : 'Restored "${entry.name}" for ${DateFormat('MMM yyyy').format(_selectedMonth)}.'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _handleLoanPrepayment(LoanEntry loan, int prepaymentInPaise) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final monthKey = DateTime(_selectedMonth.year, _selectedMonth.month);
+    final updatedPayments = Map<DateTime, int>.from(loan.extraPayments);
+    if (prepaymentInPaise <= 0) {
+      updatedPayments.remove(monthKey);
+    } else {
+      updatedPayments[monthKey] = prepaymentInPaise;
+    }
+    final updated = LoanEntry(
+      id: loan.id,
+      name: loan.name,
+      originalAmountInPaise: loan.originalAmountInPaise,
+      outstandingAmountInPaise: loan.outstandingAmountInPaise,
+      interestRatePerAnnum: loan.interestRatePerAnnum,
+      emiInPaise: loan.emiInPaise,
+      extraEmiInPaise: loan.extraEmiInPaise,
+      extraPayments: updatedPayments,
+      startDate: loan.startDate,
+      tenureMonths: loan.tenureMonths,
+    );
+    setState(() {
+      final idx = _loanEntries.indexWhere((e) => e.id == loan.id);
+      if (idx >= 0) {
+        _loanEntries[idx] = updated;
+      }
+    });
+    await _saveData();
+    if (mounted) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Prepayment for ${DateFormat('MMM yyyy').format(_selectedMonth)} saved.'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showBackupSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => _BackupSheet(
+        username: widget.username,
+        moneyEntries: _moneyEntries,
+        loanEntries: _loanEntries,
+        onImport: (newMoney, newLoans) async {
+          setState(() {
+            final seenMoney = _moneyEntries.map((e) => e.id).toSet();
+            for (final m in newMoney) {
+              if (!seenMoney.contains(m.id)) {
+                _moneyEntries.add(m);
+                seenMoney.add(m.id);
+              }
+            }
+            final seenLoans = _loanEntries.map((e) => e.id).toSet();
+            for (final l in newLoans) {
+              if (!seenLoans.contains(l.id)) {
+                _loanEntries.add(l);
+                seenLoans.add(l.id);
+              }
+            }
+          });
+          await _saveData();
+        },
+        onScanRecover: () async {
+          await _loadSavedData();
+        },
+        onLoadTemplate: () async {
+          final now = DateTime.now();
+          final sampleMoney = [
+            MoneyEntry(
+              id: 'sample-sal-${now.millisecondsSinceEpoch}',
+              name: 'Salary (Primary Income)',
+              type: MoneyEntryType.income,
+              amountInPaise: 8500000,
+              mode: MoneyEntryMode.recurring,
+              frequency: RecurrenceFrequency.monthly,
+              date: DateTime(now.year, now.month, 1),
+            ),
+            MoneyEntry(
+              id: 'sample-rent-${now.millisecondsSinceEpoch}',
+              name: 'House Rent',
+              type: MoneyEntryType.expense,
+              amountInPaise: 2400000,
+              mode: MoneyEntryMode.recurring,
+              frequency: RecurrenceFrequency.monthly,
+              date: DateTime(now.year, now.month, 5),
+            ),
+            MoneyEntry(
+              id: 'sample-groc-${now.millisecondsSinceEpoch}',
+              name: 'Groceries & Household',
+              type: MoneyEntryType.expense,
+              amountInPaise: 1200000,
+              mode: MoneyEntryMode.recurring,
+              frequency: RecurrenceFrequency.monthly,
+              date: DateTime(now.year, now.month, 7),
+            ),
+            MoneyEntry(
+              id: 'sample-util-${now.millisecondsSinceEpoch}',
+              name: 'Electricity & Utilities',
+              type: MoneyEntryType.expense,
+              amountInPaise: 450000,
+              mode: MoneyEntryMode.recurring,
+              frequency: RecurrenceFrequency.monthly,
+              date: DateTime(now.year, now.month, 10),
+            ),
+          ];
+          final sampleLoan = LoanEntry(
+            id: 'sample-loan-${now.millisecondsSinceEpoch}',
+            name: 'Car Loan',
+            originalAmountInPaise: 65000000,
+            outstandingAmountInPaise: 48000000,
+            interestRatePerAnnum: 8.7,
+            emiInPaise: 1450000,
+            extraEmiInPaise: 200000,
+            startDate: DateTime(now.year - 1, now.month, 1),
+            tenureMonths: 48,
+          );
+          setState(() {
+            _moneyEntries.addAll(sampleMoney);
+            _loanEntries.add(sampleLoan);
+          });
+          await _saveData();
+        },
+      ),
+    );
   }
 
   @override
@@ -1398,6 +1733,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         onAddPressed: _handleAddMoney,
         onEditPressed: _handleEditMoney,
         onDeletePressed: _handleDeleteMoney,
+        onToggleSkip: _handleToggleSkipMoney,
         getMoneyTotal: _getMoneyTotal,
         getMoneyTotalForYear: _getMoneyTotalForYear,
         getLoanEmiTotal: _getLoanEmiTotal,
@@ -1411,6 +1747,7 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
         onAddPressed: _handleAddLoan,
         onEditPressed: _handleEditLoan,
         onDeletePressed: _handleDeleteLoan,
+        onPrepayment: _handleLoanPrepayment,
       ),
     ];
 
@@ -1426,6 +1763,11 @@ class _MoneyMonkHomePageState extends State<MoneyMonkHomePage> {
           ),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.shield_outlined, color: moneyMonkNavy),
+            tooltip: 'Data Backup & Recovery',
+            onPressed: () => _showBackupSheet(context),
+          ),
           IconButton(
             icon: const Icon(Icons.auto_awesome, color: moneyMonkNavy),
             tooltip: 'MoneyMonk AI Advisor',
@@ -1730,6 +2072,267 @@ class _UserManagementSheetContentState extends State<_UserManagementSheetContent
               title: const Text('Sign Out', style: TextStyle(fontWeight: FontWeight.w600, color: moneyMonkError)),
               subtitle: const Text('Safely log out of this account', style: TextStyle(fontSize: 11)),
               onTap: widget.onSignOut,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackupSheet extends StatefulWidget {
+  const _BackupSheet({
+    required this.username,
+    required this.moneyEntries,
+    required this.loanEntries,
+    required this.onImport,
+    required this.onScanRecover,
+    required this.onLoadTemplate,
+  });
+
+  final String username;
+  final List<MoneyEntry> moneyEntries;
+  final List<LoanEntry> loanEntries;
+  final Future<void> Function(List<MoneyEntry>, List<LoanEntry>) onImport;
+  final Future<void> Function() onScanRecover;
+  final Future<void> Function() onLoadTemplate;
+
+  @override
+  State<_BackupSheet> createState() => _BackupSheetState();
+}
+
+class _BackupSheetState extends State<_BackupSheet> {
+  bool _isScanning = false;
+
+  void _exportJson() {
+    final data = {
+      'moneymonk_version': 1,
+      'exported_at': DateTime.now().toIso8601String(),
+      'username': widget.username,
+      'money': widget.moneyEntries.map((e) => e.toJson()).toList(),
+      'loans': widget.loanEntries.map((e) => e.toJson()).toList(),
+    };
+    final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+    Clipboard.setData(ClipboardData(text: jsonString));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${widget.moneyEntries.length} money entries & ${widget.loanEntries.length} loans to clipboard as JSON!'),
+        backgroundColor: moneyMonkIncome,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _showImportDialog() {
+    final controller = TextEditingController();
+    String? importError;
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Import Backup JSON'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Paste your exported MoneyMonk JSON backup text below:',
+                    style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText),
+                  ),
+                  const SizedBox(height: 12),
+                  if (importError != null) ...[
+                    Text(importError!, style: const TextStyle(color: moneyMonkError, fontSize: 12)),
+                    const SizedBox(height: 8),
+                  ],
+                  TextField(
+                    controller: controller,
+                    maxLines: 8,
+                    decoration: const InputDecoration(
+                      hintText: '{\n  "money": [...],\n  "loans": [...]\n}',
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    try {
+                      final raw = jsonDecode(controller.text.trim());
+                      if (raw is! Map) {
+                        setDialogState(() => importError = 'Invalid JSON format.');
+                        return;
+                      }
+                      final moneyList = <MoneyEntry>[];
+                      final loansList = <LoanEntry>[];
+
+                      if (raw['money'] is List) {
+                        for (final item in raw['money']) {
+                          if (item is Map<String, dynamic>) {
+                            moneyList.add(MoneyEntry.fromJson(item));
+                          } else if (item is Map) {
+                            moneyList.add(MoneyEntry.fromJson(Map<String, dynamic>.from(item)));
+                          }
+                        }
+                      }
+                      if (raw['loans'] is List) {
+                        for (final item in raw['loans']) {
+                          if (item is Map<String, dynamic>) {
+                            loansList.add(LoanEntry.fromJson(item));
+                          } else if (item is Map) {
+                            loansList.add(LoanEntry.fromJson(Map<String, dynamic>.from(item)));
+                          }
+                        }
+                      }
+                      if (moneyList.isEmpty && loansList.isEmpty) {
+                        setDialogState(() => importError = 'No valid entries found in the JSON.');
+                        return;
+                      }
+
+                      final messenger = ScaffoldMessenger.of(context);
+                      await widget.onImport(moneyList, loansList);
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      if (mounted) {
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text('Successfully imported ${moneyList.length} money entries and ${loansList.length} loans!'),
+                            backgroundColor: moneyMonkIncome,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      setDialogState(() => importError = 'Failed to parse JSON: $e');
+                    }
+                  },
+                  child: const Text('Import'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.shield_outlined, color: moneyMonkNavy, size: 26),
+                    SizedBox(width: 8),
+                    Text(
+                      'Data Backup & Recovery',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: moneyMonkPrimaryText),
+                    ),
+                  ],
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFBBF7D0)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, color: moneyMonkIncome, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'All your entries are permanently saved on this device. Currently preserving ${widget.moneyEntries.length} money items & ${widget.loanEntries.length} loans.',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFF166534), fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.copy_all_outlined, color: moneyMonkNavy),
+                    title: const Text('Export Backup (Copy JSON)', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: const Text('Copy full financial data to clipboard to save anywhere', style: TextStyle(fontSize: 12)),
+                    onTap: _exportJson,
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.file_upload_outlined, color: moneyMonkNavy),
+                    title: const Text('Restore from Backup (Paste JSON)', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: const Text('Import entries from a previously saved JSON string', style: TextStyle(fontSize: 12)),
+                    onTap: _showImportDialog,
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.search_outlined, color: moneyMonkNavy),
+                    title: const Text('Deep Scan & Recover Device Data', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: const Text('Scan this browser storage for any older or hidden sessions', style: TextStyle(fontSize: 12)),
+                    trailing: _isScanning ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : null,
+                    onTap: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      setState(() => _isScanning = true);
+                      await widget.onScanRecover();
+                      if (!mounted) return;
+                      setState(() => _isScanning = false);
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text('Deep scan complete: ${widget.moneyEntries.length} entries & ${widget.loanEntries.length} loans active.'),
+                          backgroundColor: moneyMonkIncome,
+                        ),
+                      );
+                    },
+                  ),
+                  if (widget.moneyEntries.isEmpty && widget.loanEntries.isEmpty) ...[
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.auto_stories_outlined, color: moneyMonkIncome),
+                      title: const Text('Load Sample Financial Template', style: TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: const Text('Start with typical salary, rent, utilities, and a car loan', style: TextStyle(fontSize: 12)),
+                      onTap: () async {
+                        final nav = Navigator.of(context);
+                        final messenger = ScaffoldMessenger.of(context);
+                        await widget.onLoadTemplate();
+                        if (!mounted) return;
+                        nav.pop();
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('Loaded sample template with salary, rent, utilities, and car loan!'),
+                            backgroundColor: moneyMonkIncome,
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
             ),
           ],
         ),
@@ -2884,6 +3487,7 @@ class MoneyScreen extends StatelessWidget {
     required this.onAddPressed,
     required this.onEditPressed,
     required this.onDeletePressed,
+    this.onToggleSkip,
     required this.getMoneyTotal,
     required this.getMoneyTotalForYear,
     required this.getLoanEmiTotal,
@@ -2902,11 +3506,12 @@ class MoneyScreen extends StatelessWidget {
   final VoidCallback onAddPressed;
   final ValueChanged<MoneyEntry> onEditPressed;
   final ValueChanged<MoneyEntry> onDeletePressed;
+  final void Function(MoneyEntry, Map<DateTime, int>)? onToggleSkip;
   final int Function(MoneyEntryType, {DateTime? forMonth}) getMoneyTotal;
   final int Function(MoneyEntryType) getMoneyTotalForYear;
   final int Function({DateTime? forMonth}) getLoanEmiTotal;
   final int Function({DateTime? forYear}) getLoanEmiTotalForYear;
-  final List<MapEntry<DateTime, int>> Function() generateForecast;
+  final List<FinancialForecastRow> Function() generateForecast;
 
   @override
   Widget build(BuildContext context) {
@@ -3200,6 +3805,7 @@ class MoneyScreen extends StatelessWidget {
                                   tint: const Color(0xFFF2FBF4),
                                   onEdit: onEditPressed,
                                   onDelete: onDeletePressed,
+                                  onToggleSkip: onToggleSkip,
                                 );
                                 final expense = _MoneyColumn(
                                   label: 'Expense',
@@ -3209,6 +3815,7 @@ class MoneyScreen extends StatelessWidget {
                                   tint: const Color(0xFFFEF0EA),
                                   onEdit: onEditPressed,
                                   onDelete: onDeletePressed,
+                                  onToggleSkip: onToggleSkip,
                                 );
                                 if (tableConstraints.maxWidth < 620) {
                                   return Column(children: [income, const SizedBox(height: 18), expense]);
@@ -3420,20 +4027,34 @@ class MoneyScreen extends StatelessWidget {
                         child: SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
                           child: DataTable(
-                            columnSpacing: 16,
+                            columnSpacing: 20,
                             columns: const [
-                              DataColumn(label: Text('Month')),
-                              DataColumn(label: Text('Balance')),
+                              DataColumn(label: Text('Month', style: TextStyle(fontWeight: FontWeight.w700))),
+                              DataColumn(label: Text('Income', style: TextStyle(fontWeight: FontWeight.w700))),
+                              DataColumn(label: Text('Direct Expenses', style: TextStyle(fontWeight: FontWeight.w700))),
+                              DataColumn(label: Text('Loan EMIs', style: TextStyle(fontWeight: FontWeight.w700))),
+                              DataColumn(label: Text('Total Outflow', style: TextStyle(fontWeight: FontWeight.w700))),
+                              DataColumn(label: Text('Net Balance', style: TextStyle(fontWeight: FontWeight.w700))),
                             ],
                             rows: generateForecast()
-                                .map((entry) => DataRow(
+                                .map((row) => DataRow(
                               cells: [
-                                DataCell(Text(DateFormat('MMM yyyy').format(entry.key))),
+                                DataCell(Text(DateFormat('MMM yyyy').format(row.month))),
                                 DataCell(Text(
-                                  _formatCurrency(entry.value),
+                                  _formatCurrency(row.income),
+                                  style: const TextStyle(color: moneyMonkIncome, fontWeight: FontWeight.w600),
+                                )),
+                                DataCell(Text(_formatCurrency(row.directExpense))),
+                                DataCell(Text(_formatCurrency(row.loanEmi))),
+                                DataCell(Text(
+                                  _formatCurrency(row.totalOutflow),
+                                  style: const TextStyle(color: moneyMonkExpense, fontWeight: FontWeight.w600),
+                                )),
+                                DataCell(Text(
+                                  _formatCurrency(row.balance),
                                   style: TextStyle(
-                                    color: entry.value >= 0 ? moneyMonkIncome : moneyMonkExpense,
-                                    fontWeight: FontWeight.w600,
+                                    color: row.balance >= 0 ? moneyMonkIncome : moneyMonkExpense,
+                                    fontWeight: FontWeight.w700,
                                   ),
                                 )),
                               ],
@@ -3473,6 +4094,7 @@ class _MoneyColumn extends StatelessWidget {
     required this.tint,
     required this.onEdit,
     required this.onDelete,
+    this.onToggleSkip,
   });
 
   final String label;
@@ -3482,10 +4104,16 @@ class _MoneyColumn extends StatelessWidget {
   final Color tint;
   final ValueChanged<MoneyEntry> onEdit;
   final ValueChanged<MoneyEntry> onDelete;
+  final void Function(MoneyEntry, Map<DateTime, int>)? onToggleSkip;
 
   @override
   Widget build(BuildContext context) {
-    final columnTotal = entries.fold(0, (sum, entry) => sum + entry.getAmountForMonth(selectedMonth));
+    final columnTotal = entries.fold(0, (sum, entry) {
+      if (entry.type == MoneyEntryType.expense && entry.isLoanCovered) {
+        return sum; // P1: Exclude covered-by-loan from direct cash outflow
+      }
+      return sum + entry.getAmountForMonth(selectedMonth);
+    });
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3502,10 +4130,11 @@ class _MoneyColumn extends StatelessWidget {
           Text('No ${label.toLowerCase()} entries', style: const TextStyle(fontSize: 13, color: moneyMonkMuted))
         else
           ...entries.map((entry) {
-            final amountForMonth = entry.getAmountForMonth(selectedMonth);
             final monthKey = DateTime(selectedMonth.year, selectedMonth.month);
-            final isOverridden = entry.overrides.containsKey(monthKey);
+            final isSkipped = entry.isSkippedInMonth(selectedMonth);
+            final isOverridden = entry.isOverriddenInMonth(selectedMonth);
             final isRecurring = entry.mode == MoneyEntryMode.recurring;
+            final amountForMonth = entry.getAmountForMonth(selectedMonth);
 
             return Container(
               margin: const EdgeInsets.only(bottom: 8),
@@ -3517,10 +4146,18 @@ class _MoneyColumn extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
+                        Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 6,
                           children: [
-                            Flexible(child: Text(entry.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
-                            const SizedBox(width: 6),
+                            Text(
+                              entry.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                decoration: isSkipped ? TextDecoration.lineThrough : null,
+                                color: isSkipped ? moneyMonkMuted : moneyMonkPrimaryText,
+                              ),
+                            ),
                             if (isRecurring)
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -3545,21 +4182,88 @@ class _MoneyColumn extends StatelessWidget {
                                   style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: moneyMonkSecondaryText),
                                 ),
                               ),
+                            if (isSkipped)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF3F4F6),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: const Color(0xFFD1D5DB)),
+                                ),
+                                child: const Text(
+                                  'Skipped this month',
+                                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: moneyMonkSecondaryText),
+                                ),
+                              ),
+                            if (entry.isLoanCovered)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: moneyMonkNavyLight,
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: moneyMonkNavy.withValues(alpha: 0.3)),
+                                ),
+                                child: const Text(
+                                  'Covered by Loan',
+                                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: moneyMonkNavy),
+                                ),
+                              ),
                           ],
                         ),
-                        if (isOverridden)
+                        if (isOverridden && !isSkipped)
                           Text(
                             'Base: ${_formatCurrency(entry.amountInPaise)}',
+                            style: const TextStyle(fontSize: 10, color: moneyMonkSecondaryText),
+                          ),
+                        if (entry.endDate != null)
+                          Text(
+                            'Ends ${DateFormat('MMM yyyy').format(entry.endDate!)}',
                             style: const TextStyle(fontSize: 10, color: moneyMonkSecondaryText),
                           ),
                       ],
                     ),
                   ),
-                  Text(_formatCurrency(amountForMonth), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
-                  PopupMenuButton(
+                  if (isSkipped)
+                    Row(
+                      children: [
+                        const Text('₹0', style: TextStyle(fontWeight: FontWeight.w700, color: moneyMonkMuted)),
+                        const SizedBox(width: 4),
+                        Text(
+                          _formatCurrency(entry.amountInPaise),
+                          style: const TextStyle(
+                            decoration: TextDecoration.lineThrough,
+                            fontSize: 11,
+                            color: moneyMonkMuted,
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    Text(_formatCurrency(amountForMonth), style: TextStyle(fontWeight: FontWeight.w700, color: accent)),
+                  PopupMenuButton<String>(
+                    onSelected: (val) {
+                      if (val == 'edit') {
+                        onEdit(entry);
+                      } else if (val == 'delete') {
+                        onDelete(entry);
+                      } else if (val == 'skip') {
+                        final newOverrides = Map<DateTime, int>.from(entry.overrides);
+                        newOverrides[monthKey] = 0;
+                        onToggleSkip?.call(entry, newOverrides);
+                      } else if (val == 'unskip') {
+                        final newOverrides = Map<DateTime, int>.from(entry.overrides);
+                        newOverrides.remove(monthKey);
+                        onToggleSkip?.call(entry, newOverrides);
+                      }
+                    },
                     itemBuilder: (context) => [
-                      PopupMenuItem(onTap: () => onEdit(entry), child: const Text('Edit')),
-                      PopupMenuItem(onTap: () => onDelete(entry), child: const Text('Delete')),
+                      const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                      if (isRecurring)
+                        PopupMenuItem(
+                          value: isSkipped ? 'unskip' : 'skip',
+                          child: Text(isSkipped ? 'Unskip this month' : 'Skip this month'),
+                        ),
+                      const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(color: moneyMonkError))),
                     ],
                   ),
                 ],
@@ -3585,6 +4289,7 @@ class LoansScreen extends StatelessWidget {
     required this.onAddPressed,
     required this.onEditPressed,
     required this.onDeletePressed,
+    this.onPrepayment,
   });
 
   final List<LoanEntry> entries;
@@ -3593,6 +4298,7 @@ class LoansScreen extends StatelessWidget {
   final VoidCallback onAddPressed;
   final ValueChanged<LoanEntry> onEditPressed;
   final ValueChanged<LoanEntry> onDeletePressed;
+  final void Function(LoanEntry, int)? onPrepayment;
 
   @override
   Widget build(BuildContext context) {
@@ -3699,6 +4405,7 @@ class LoansScreen extends StatelessWidget {
                     selectedMonth: activeMonth,
                     onEdit: () => onEditPressed(loan),
                     onDelete: () => onDeletePressed(loan),
+                    onPrepayment: onPrepayment,
                   )),
                   const SizedBox(height: 16),
                   if (entries.length > 1) ...[
@@ -3885,21 +4592,79 @@ class _LoanCard extends StatelessWidget {
     this.selectedMonth,
     required this.onEdit,
     required this.onDelete,
+    this.onPrepayment,
   });
 
   final LoanEntry loan;
   final DateTime? selectedMonth;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final void Function(LoanEntry, int)? onPrepayment;
 
   @override
   Widget build(BuildContext context) {
     final amortization = loan.calculateAmortization();
     final viewMonth = selectedMonth ?? DateTime.now();
+    final monthKey = DateTime(viewMonth.year, viewMonth.month);
+    final monthPrepayment = loan.extraPayments[monthKey] ?? 0;
     final remainingPrincipalInMonth = loan.getRemainingPrincipalForMonth(viewMonth);
     final remainingMonthsInMonth = loan.getRemainingMonthsAsOf(viewMonth);
     final isPaidOff = loan.isPaidOffAsOf(viewMonth);
     final emiDueInMonth = loan.getEmiForMonth(viewMonth);
+
+    void showPrepaymentDialog() {
+      final ctrl = TextEditingController(
+        text: monthPrepayment > 0 ? (monthPrepayment / 100).toString() : '',
+      );
+      showDialog<void>(
+        context: context,
+        builder: (dlgCtx) => AlertDialog(
+          title: Text('Prepayment for ${DateFormat('MMM yyyy').format(viewMonth)}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter one-time extra prepayment toward loan principal for this specific month:',
+                style: TextStyle(fontSize: 13, color: moneyMonkSecondaryText),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: 'Prepayment Amount',
+                  prefixText: '₹ ',
+                  hintText: '50000',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (monthPrepayment > 0)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dlgCtx);
+                  onPrepayment?.call(loan, 0);
+                },
+                child: const Text('Clear Prepayment', style: TextStyle(color: moneyMonkError)),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final val = double.tryParse(ctrl.text.trim()) ?? 0;
+                Navigator.pop(dlgCtx);
+                onPrepayment?.call(loan, (val * 100).round());
+              },
+              child: const Text('Save Prepayment'),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Card(
       child: Padding(
@@ -3918,20 +4683,51 @@ class _LoanCard extends StatelessWidget {
                     color: moneyMonkPrimaryText,
                   ),
                 ),
-                PopupMenuButton(
+                PopupMenuButton<String>(
+                  onSelected: (action) {
+                    if (action == 'edit') {
+                      onEdit();
+                    } else if (action == 'delete') {
+                      onDelete();
+                    } else if (action == 'prepay') {
+                      showPrepaymentDialog();
+                    }
+                  },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      onTap: onEdit,
-                      child: const Text('Edit'),
-                    ),
-                    PopupMenuItem(
-                      onTap: onDelete,
-                      child: const Text('Delete'),
-                    ),
+                    const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                    const PopupMenuItem(value: 'prepay', child: Text('Add Prepayment for this month')),
+                    const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(color: moneyMonkError))),
                   ],
                 ),
               ],
             ),
+            if (monthPrepayment > 0) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFFDE68A)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.bolt, color: Color(0xFFD97706), size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Extra Prepayment for ${DateFormat('MMM yy').format(viewMonth)}: ${_formatCurrency(monthPrepayment)}',
+                        style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF92400E), fontSize: 12),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => onPrepayment?.call(loan, 0),
+                      child: const Icon(Icons.close, size: 16, color: Color(0xFF92400E)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             if (isPaidOff)
               Container(
@@ -4120,6 +4916,8 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
   final List<MoneyEntryType> _types = [MoneyEntryType.income];
   final List<MoneyEntryMode> _modes = [MoneyEntryMode.oneTime];
   final List<RecurrenceFrequency> _frequencies = [RecurrenceFrequency.monthly];
+  final List<DateTime?> _endDates = [null];
+  final List<bool> _isLoanCoveredList = [false];
   late DateTime _selectedDate;
   late DateTime _selectedRecurringStartDate;
 
@@ -4149,6 +4947,8 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
       _types.add(MoneyEntryType.income);
       _modes.add(MoneyEntryMode.oneTime);
       _frequencies.add(RecurrenceFrequency.monthly);
+      _endDates.add(null);
+      _isLoanCoveredList.add(false);
     });
   }
 
@@ -4162,6 +4962,8 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
       _types.removeAt(index);
       _modes.removeAt(index);
       _frequencies.removeAt(index);
+      _endDates.removeAt(index);
+      _isLoanCoveredList.removeAt(index);
     });
   }
 
@@ -4212,6 +5014,8 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
         mode: _modes[index],
         date: _modes[index] == MoneyEntryMode.oneTime ? _selectedDate : _selectedRecurringStartDate,
         frequency: _modes[index] == MoneyEntryMode.recurring ? _frequencies[index] : null,
+        endDate: _modes[index] == MoneyEntryMode.recurring ? _endDates[index] : null,
+        isLoanCovered: _types[index] == MoneyEntryType.expense && _isLoanCoveredList[index],
       ));
     }
 
@@ -4221,6 +5025,8 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
 
   Widget _buildEntryRow(int index) {
     final isRecurring = _modes[index] == MoneyEntryMode.recurring;
+    final isExpense = _types[index] == MoneyEntryType.expense;
+
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: Padding(
@@ -4285,6 +5091,53 @@ class _AddMoneySheetState extends State<AddMoneySheet> {
                 )),
               ],
             ]),
+            if (isRecurring) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.event_outlined, size: 16),
+                      label: Text(
+                        _endDates[index] == null
+                            ? 'No End Date (Continuous)'
+                            : 'Ends: ${DateFormat('MMM yyyy').format(_endDates[index]!)}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _endDates[index] ?? _selectedRecurringStartDate.add(const Duration(days: 365)),
+                          firstDate: _selectedRecurringStartDate,
+                          lastDate: DateTime(DateTime.now().year + 20),
+                        );
+                        if (picked != null) {
+                          setState(() => _endDates[index] = picked);
+                        }
+                      },
+                    ),
+                  ),
+                  if (_endDates[index] != null)
+                    IconButton(
+                      icon: const Icon(Icons.clear, size: 18),
+                      tooltip: 'Clear End Date',
+                      onPressed: () => setState(() => _endDates[index] = null),
+                    ),
+                ],
+              ),
+            ],
+            if (isExpense)
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: _isLoanCoveredList[index],
+                onChanged: (val) => setState(() => _isLoanCoveredList[index] = val ?? false),
+                title: const Text(
+                  'Covered by active loan (prevents double-counting with Loan EMI)',
+                  style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
           ],
         ),
       ),
@@ -4670,11 +5523,15 @@ class EditMoneySheet extends StatefulWidget {
   State<EditMoneySheet> createState() => _EditMoneySheetState();
 }
 
+enum _RecurringScope { thisMonthOnly, fromThisMonthOnward, allMonths }
+
 class _EditMoneySheetState extends State<EditMoneySheet> {
   late TextEditingController _nameController;
   late TextEditingController _amountController;
   late MoneyEntryType _type;
-  bool _applyToAllRecurringMonths = false;
+  _RecurringScope _recurringScope = _RecurringScope.thisMonthOnly;
+  DateTime? _endDate;
+  bool _isLoanCovered = false;
 
   @override
   void initState() {
@@ -4682,6 +5539,8 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
     _nameController = TextEditingController(text: widget.entry.name);
     _amountController = TextEditingController(text: (widget.entry.amountInPaise / 100).toString());
     _type = widget.entry.type;
+    _endDate = widget.entry.endDate;
+    _isLoanCovered = widget.entry.isLoanCovered;
   }
 
   @override
@@ -4727,14 +5586,22 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
 
     final monthKey = DateTime(widget.selectedMonth.year, widget.selectedMonth.month);
     final overrides = Map<DateTime, int>.from(widget.entry.overrides);
+    final effectiveRates = Map<DateTime, int>.from(widget.entry.effectiveRates);
     var baseAmountInPaise = widget.entry.amountInPaise;
 
     if (widget.entry.mode == MoneyEntryMode.recurring) {
-      if (_applyToAllRecurringMonths) {
-        baseAmountInPaise = amountInPaise;
-        overrides.remove(monthKey);
-      } else {
-        overrides[monthKey] = amountInPaise;
+      switch (_recurringScope) {
+        case _RecurringScope.thisMonthOnly:
+          overrides[monthKey] = amountInPaise;
+          break;
+        case _RecurringScope.fromThisMonthOnward:
+          effectiveRates[monthKey] = amountInPaise;
+          overrides.remove(monthKey);
+          break;
+        case _RecurringScope.allMonths:
+          baseAmountInPaise = amountInPaise;
+          overrides.remove(monthKey);
+          break;
       }
     } else {
       baseAmountInPaise = amountInPaise;
@@ -4748,7 +5615,10 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
       mode: widget.entry.mode,
       date: widget.entry.date,
       frequency: widget.entry.frequency,
+      endDate: _endDate,
       overrides: overrides,
+      effectiveRates: effectiveRates,
+      isLoanCovered: _type == MoneyEntryType.expense && _isLoanCovered,
     );
 
     widget.onSave(updated);
@@ -4834,36 +5704,91 @@ class _EditMoneySheetState extends State<EditMoneySheet> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    Expanded(
-                      child: ChoiceChip(
-                        label: Text('This month (${DateFormat('MMM yy').format(widget.selectedMonth)})'),
-                        selected: !_applyToAllRecurringMonths,
-                        onSelected: (_) => setState(() => _applyToAllRecurringMonths = false),
-                        selectedColor: moneyMonkNavyLight,
-                        labelStyle: TextStyle(
-                          color: !_applyToAllRecurringMonths ? moneyMonkNavy : moneyMonkPrimaryText,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12,
-                        ),
+                    ChoiceChip(
+                      label: Text('This month only (${DateFormat('MMM yy').format(widget.selectedMonth)})'),
+                      selected: _recurringScope == _RecurringScope.thisMonthOnly,
+                      onSelected: (_) => setState(() => _recurringScope = _RecurringScope.thisMonthOnly),
+                      selectedColor: moneyMonkNavyLight,
+                      labelStyle: TextStyle(
+                        color: _recurringScope == _RecurringScope.thisMonthOnly ? moneyMonkNavy : moneyMonkPrimaryText,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ChoiceChip(
-                        label: const Text('All recurring months'),
-                        selected: _applyToAllRecurringMonths,
-                        onSelected: (_) => setState(() => _applyToAllRecurringMonths = true),
-                        selectedColor: moneyMonkNavyLight,
-                        labelStyle: TextStyle(
-                          color: _applyToAllRecurringMonths ? moneyMonkNavy : moneyMonkPrimaryText,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12,
-                        ),
+                    ChoiceChip(
+                      label: const Text('From this month onward'),
+                      selected: _recurringScope == _RecurringScope.fromThisMonthOnward,
+                      onSelected: (_) => setState(() => _recurringScope = _RecurringScope.fromThisMonthOnward),
+                      selectedColor: moneyMonkNavyLight,
+                      labelStyle: TextStyle(
+                        color: _recurringScope == _RecurringScope.fromThisMonthOnward ? moneyMonkNavy : moneyMonkPrimaryText,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    ChoiceChip(
+                      label: const Text('All months'),
+                      selected: _recurringScope == _RecurringScope.allMonths,
+                      onSelected: (_) => setState(() => _recurringScope = _RecurringScope.allMonths),
+                      selectedColor: moneyMonkNavyLight,
+                      labelStyle: TextStyle(
+                        color: _recurringScope == _RecurringScope.allMonths ? moneyMonkNavy : moneyMonkPrimaryText,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.event_outlined, size: 16),
+                        label: Text(
+                          _endDate == null
+                              ? 'No End Date (Continuous)'
+                              : 'Ends: ${DateFormat('MMM yyyy').format(_endDate!)}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _endDate ?? widget.selectedMonth.add(const Duration(days: 365)),
+                            firstDate: widget.entry.date,
+                            lastDate: DateTime(DateTime.now().year + 20),
+                          );
+                          if (picked != null) {
+                            setState(() => _endDate = picked);
+                          }
+                        },
+                      ),
+                    ),
+                    if (_endDate != null)
+                      IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        tooltip: 'Clear End Date',
+                        onPressed: () => setState(() => _endDate = null),
+                      ),
+                  ],
+                ),
+              ],
+              if (_type == MoneyEntryType.expense) ...[
+                const SizedBox(height: 8),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: _isLoanCovered,
+                  onChanged: (val) => setState(() => _isLoanCovered = val ?? false),
+                  title: const Text(
+                    'Covered by active loan (prevents double-counting with Loan EMI)',
+                    style: TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
+                  ),
+                  controlAffinity: ListTileControlAffinity.leading,
                 ),
               ],
               const SizedBox(height: 18),

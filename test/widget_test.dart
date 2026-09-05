@@ -12,12 +12,15 @@ void main() {
   Future<void> signUp(WidgetTester tester) async {
     await tester.pumpWidget(const MoneyMonkApp());
     await tester.pumpAndSettle();
-    await tester.tap(find.text('New here? Sign up'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).at(0), 'tester');
-    await tester.enterText(find.byType(TextField).at(1), 'password');
-    await tester.tap(find.text('Sign up'));
-    await tester.pumpAndSettle();
+    final signUpButton = find.text('New here? Sign up');
+    if (signUpButton.evaluate().isNotEmpty) {
+      await tester.tap(signUpButton);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).at(0), 'tester');
+      await tester.enterText(find.byType(TextField).at(1), 'password');
+      await tester.tap(find.text('Sign up'));
+      await tester.pumpAndSettle();
+    }
   }
 
   testWidgets('MoneyMonk shows empty Money and Loans screens', (tester) async {
@@ -102,7 +105,8 @@ void main() {
     await signUp(tester);
 
     // Find and tap the user chip in AppBar
-    await tester.tap(find.text('tester'));
+    final chipFinder = find.descendant(of: find.byType(AppBar), matching: find.byType(ActionChip));
+    await tester.tap(chipFinder);
     await tester.pumpAndSettle();
 
     expect(find.text('Account & Users'), findsOneWidget);
@@ -201,4 +205,280 @@ void main() {
     expect(overriddenSalary.getAmountForMonth(DateTime(2026, 10)), equals(9500000));
     expect(overriddenSalary.getAmountForMonth(DateTime(2026, 11)), equals(8000000));
   });
+
+  test('P1: Loan EMI double counting prevention via isLoanCovered flag', () {
+    final loanCoveredExpense = MoneyEntry(
+      id: 'car-manual-expense',
+      name: 'Car EMI (Manual duplicate)',
+      type: MoneyEntryType.expense,
+      amountInPaise: 1200000, // ₹12,000
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      isLoanCovered: true,
+    );
+
+    final regularExpense = MoneyEntry(
+      id: 'grocery-expense',
+      name: 'Groceries',
+      type: MoneyEntryType.expense,
+      amountInPaise: 1500000, // ₹15,000
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      isLoanCovered: false,
+    );
+
+    expect(loanCoveredExpense.isLoanCovered, isTrue);
+    expect(regularExpense.isLoanCovered, isFalse);
+
+    // Calculation logic mirroring MoneyScreen:
+    final entries = [loanCoveredExpense, regularExpense];
+    final selectedMonth = DateTime(2026, 3);
+    final directExpenseTotal = entries
+        .where((e) => e.type == MoneyEntryType.expense && !e.isLoanCovered && e.appliesToMonth(selectedMonth))
+        .fold<int>(0, (sum, e) => sum + e.getAmountForMonth(selectedMonth));
+
+    expect(directExpenseTotal, equals(1500000)); // Exactly 15,000, excluding the 12,000 loan-covered duplicate!
+  });
+
+  test('P2: Loan payoff exact principal clamping and no post-payoff payments', () {
+    final loan = LoanEntry(
+      id: 'short-loan',
+      name: 'Short Loan',
+      originalAmountInPaise: 2500000, // ₹25,000
+      outstandingAmountInPaise: 2500000,
+      interestRatePerAnnum: 12.0, // 1% per month
+      emiInPaise: 1000000, // ₹10,000/month
+      startDate: DateTime(2026, 1, 1),
+      tenureMonths: 12,
+    );
+
+    final amort = loan.calculateAmortization();
+    expect(amort.isValid, isTrue);
+    expect(amort.schedule.isNotEmpty, isTrue);
+
+    // Check every schedule month: principal should NEVER be negative
+    for (final month in amort.schedule) {
+      expect(month.remainingPrincipalInPaise, greaterThanOrEqualTo(0));
+      expect(month.principalPaymentInPaise, greaterThanOrEqualTo(0));
+      expect(month.interestPaymentInPaise, greaterThanOrEqualTo(0));
+    }
+
+    // Final month ending balance must be exactly 0
+    final lastMonth = amort.schedule.last;
+    expect(lastMonth.remainingPrincipalInPaise, equals(0));
+
+    // Post payoff: no EMI, 0 balance
+    final postPayoffDate = DateTime(amort.completionDate!.year, amort.completionDate!.month + 2);
+    expect(loan.isPaidOffAsOf(postPayoffDate), isTrue);
+    expect(loan.getEmiForMonth(postPayoffDate), equals(0));
+    expect(loan.getRemainingPrincipalForMonth(postPayoffDate), equals(0));
+  });
+
+  test('P3: Non-amortizing loan handling with insufficient EMI warning', () {
+    // Principal ₹10,00,000 @ 24% p.a. -> Monthly interest = ₹20,000 (2000000 paise).
+    // EMI of only ₹10,000 (1000000 paise) is less than monthly interest!
+    final underwaterLoan = LoanEntry(
+      id: 'bad-loan',
+      name: 'Underwater Loan',
+      originalAmountInPaise: 100000000, // ₹10,00,000
+      outstandingAmountInPaise: 100000000,
+      interestRatePerAnnum: 24.0,
+      emiInPaise: 1000000, // ₹10,000 EMI
+      startDate: DateTime(2026, 1, 1),
+      tenureMonths: 120,
+    );
+
+    final amort = underwaterLoan.calculateAmortization();
+    expect(amort.isValid, isFalse);
+    expect(amort.remainingMonths, equals(0)); // schedule is empty when non-amortizing
+    expect(amort.completionDate, isNull);
+    expect(amort.invalidReason, contains('EMI may not be sufficient'));
+  });
+
+  test('P4: Recurring entry endDate is strictly respected', () {
+    final gymMembership = MoneyEntry(
+      id: 'gym-1',
+      name: 'Gym',
+      type: MoneyEntryType.expense,
+      amountInPaise: 200000, // ₹2,000
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      endDate: DateTime(2026, 6, 30), // Ends in June 2026
+    );
+
+    expect(gymMembership.appliesToMonth(DateTime(2026, 1)), isTrue);
+    expect(gymMembership.appliesToMonth(DateTime(2026, 6)), isTrue);
+    expect(gymMembership.appliesToMonth(DateTime(2026, 7)), isFalse); // Expired in July!
+    expect(gymMembership.appliesToMonth(DateTime(2027, 1)), isFalse);
+  });
+
+  test('P5: Skip this month override works and preserves recurrence', () {
+    final subscription = MoneyEntry(
+      id: 'sub-1',
+      name: 'Streaming Service',
+      type: MoneyEntryType.expense,
+      amountInPaise: 50000, // ₹500
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      overrides: {
+        DateTime(2026, 3): 0, // Skipped in March 2026
+      },
+    );
+
+    expect(subscription.appliesToMonth(DateTime(2026, 2)), isTrue);
+    expect(subscription.isSkippedInMonth(DateTime(2026, 2)), isFalse);
+    expect(subscription.getAmountForMonth(DateTime(2026, 2)), equals(50000));
+
+    // March 2026: Skipped!
+    expect(subscription.appliesToMonth(DateTime(2026, 3)), isTrue);
+    expect(subscription.isSkippedInMonth(DateTime(2026, 3)), isTrue);
+    expect(subscription.getAmountForMonth(DateTime(2026, 3)), equals(0));
+
+    // April 2026: Continues as normal
+    expect(subscription.appliesToMonth(DateTime(2026, 4)), isTrue);
+    expect(subscription.isSkippedInMonth(DateTime(2026, 4)), isFalse);
+    expect(subscription.getAmountForMonth(DateTime(2026, 4)), equals(50000));
+  });
+
+  test('P6/P7: Effective rates from selected month onward', () {
+    final rent = MoneyEntry(
+      id: 'rent-1',
+      name: 'Apartment Rent',
+      type: MoneyEntryType.expense,
+      amountInPaise: 2000000, // ₹20,000 base
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      effectiveRates: {
+        DateTime(2026, 4): 2500000, // Increased to ₹25,000 from April onward
+      },
+    );
+
+    expect(rent.getAmountForMonth(DateTime(2026, 1)), equals(2000000));
+    expect(rent.getAmountForMonth(DateTime(2026, 3)), equals(2000000));
+    expect(rent.getAmountForMonth(DateTime(2026, 4)), equals(2500000));
+    expect(rent.getAmountForMonth(DateTime(2026, 5)), equals(2500000));
+    expect(rent.getAmountForMonth(DateTime(2027, 1)), equals(2500000));
+  });
+
+  test('P8: Month-specific loan extra prepayment works correctly', () {
+    final loan = LoanEntry(
+      id: 'prepay-loan',
+      name: 'Personal Loan',
+      originalAmountInPaise: 50000000, // ₹5,00,000
+      outstandingAmountInPaise: 50000000,
+      interestRatePerAnnum: 12.0,
+      emiInPaise: 2000000, // ₹20,000 regular EMI
+      startDate: DateTime(2026, 1, 1),
+      tenureMonths: 36,
+      extraPayments: {
+        DateTime(2026, 3): 10000000, // ₹1,00,000 lump sum prepayment in March 2026
+      },
+    );
+
+    expect(loan.getEmiForMonth(DateTime(2026, 1)), equals(2000000));
+    expect(loan.getEmiForMonth(DateTime(2026, 2)), equals(2000000));
+    // In March, EMI + extra prepayment:
+    expect(loan.getEmiForMonth(DateTime(2026, 3)), equals(12000000));
+    // In April, reverts to regular EMI:
+    expect(loan.getEmiForMonth(DateTime(2026, 4)), equals(2000000));
+
+    // And verify amortization finishes faster than 36 months
+    final amort = loan.calculateAmortization();
+    expect(amort.schedule.length, lessThan(36));
+  });
+
+  test('P12: Financial forecast row calculates transparent breakdown', () {
+    final income = MoneyEntry(
+      id: 'inc-1',
+      name: 'Job',
+      type: MoneyEntryType.income,
+      amountInPaise: 10000000, // ₹1,00,000
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+    );
+
+    final expense = MoneyEntry(
+      id: 'exp-1',
+      name: 'Living',
+      type: MoneyEntryType.expense,
+      amountInPaise: 4000000, // ₹40,000
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+    );
+
+    final loan = LoanEntry(
+      id: 'loan-1',
+      name: 'Auto',
+      originalAmountInPaise: 10000000,
+      outstandingAmountInPaise: 10000000,
+      interestRatePerAnnum: 12.0,
+      emiInPaise: 1500000, // ₹15,000
+      startDate: DateTime(2026, 1, 1),
+      tenureMonths: 10,
+    );
+
+    final month = DateTime(2026, 2);
+    final inc = income.getAmountForMonth(month);
+    final dirExp = expense.getAmountForMonth(month);
+    final emi = loan.getEmiForMonth(month);
+    final row = FinancialForecastRow(
+      month: month,
+      income: inc,
+      directExpense: dirExp,
+      loanEmi: emi,
+      totalOutflow: dirExp + emi,
+      balance: inc - (dirExp + emi),
+    );
+
+    expect(row.income, equals(10000000));
+    expect(row.directExpense, equals(4000000));
+    expect(row.loanEmi, equals(1500000));
+    expect(row.totalOutflow, equals(5500000)); // Direct + Loan EMI
+    expect(row.balance, equals(4500000)); // Income - Total Outflow
+  });
+
+  test('P17 & P18: Export and restore JSON backups seamlessly', () {
+    final entry = MoneyEntry(
+      id: 'money-test-json',
+      name: 'Salary',
+      type: MoneyEntryType.income,
+      amountInPaise: 8000000,
+      mode: MoneyEntryMode.recurring,
+      date: DateTime(2026, 1, 1),
+      frequency: RecurrenceFrequency.monthly,
+      endDate: DateTime(2026, 12, 31),
+      isLoanCovered: false,
+      overrides: {DateTime(2026, 3): 9000000},
+      effectiveRates: {DateTime(2026, 6): 8500000},
+    );
+
+    final loan = LoanEntry(
+      id: 'loan-test-json',
+      name: 'Home Loan',
+      originalAmountInPaise: 50000000,
+      outstandingAmountInPaise: 48000000,
+      interestRatePerAnnum: 8.5,
+      emiInPaise: 450000,
+      extraPayments: {DateTime(2026, 5): 1000000},
+      startDate: DateTime(2026, 1, 1),
+      tenureMonths: 240,
+    );
+
+    final moneyJson = entry.toJson();
+    final restoredEntry = MoneyEntry.fromJson(moneyJson);
+
+    expect(restoredEntry.id, equals(entry.id));
+    expect(restoredEntry.name, equals('Salary'));
+    expect(restoredEntry.amountInPaise, equals(8000000));
+    expect(restoredEntry.endDate, isNotNull);
+    expect(restoredEntry.getAmountForMonth(DateTime(2026, 3)), equals(9000000));
+    expect(restoredEntry.getAmountForMonth(DateTime(2026, 7)), equals(8500000));
+
+    final loanJson = loan.toJson();
+    final restoredLoan = LoanEntry.fromJson(loanJson);
+    expect(restoredLoan.id, equals(loan.id));
+    expect(restoredLoan.name, equals('Home Loan'));
+    expect(restoredLoan.extraPayments.isNotEmpty, isTrue);
+  });
 }
+

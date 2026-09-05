@@ -1740,8 +1740,27 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
       - "All recurring months": updates the baseline recurring amount (`amountInPaise`) across all past and future months.
     - **Visual Recurrence Badges**: `_MoneyColumn` displays `[Recurring]`, `[Recurring (Custom)]`, and `[One-time]` chips for immediate visual transparency.
 
+57. Financial Reliability Hardening & Zero-Lockout Data Persistence (P1 to P18)
 
-
-
-
-
+- **Zero-Lockout Auto-Session & Multi-Key Redundancy**:
+  - `LoginPage` automatically authenticates returning users and profiles with data on startup so users are never locked out or forced to re-enter data.
+  - Multi-key scanner loads and merges data from `moneymonk_money_$username`, `moneymonk_loans_$username`, global latest keys, and all discovered profile keys.
+  - Every save synchronously writes to both profile keys and global backup keys.
+  - Dedicated Data Backup & Recovery sheet offers JSON export/import, deep browser storage scan, and sample template loader.
+- **P1: Loan EMI Double-Counting Prevention**:
+  - `isLoanCovered` flag on `MoneyEntry` prevents manual duplicate expenses from double-counting with loan engine EMIs in total outflow.
+- **P2 & P3: Payoff Clamping & Non-Amortizing Warnings**:
+  - Exact principal payoff clamping to ₹0 prevents negative balances or post-payoff phantom interest.
+  - Non-amortizing loans (EMI <= monthly interest) flag `⚠️ EMI may not be sufficient to repay this loan.` with `remainingMonths = -1`.
+- **P4 & P5: Recurring End Dates & "Skip this month"**:
+  - `endDate` support prevents entries from projecting past expiration.
+  - "Skip this month" sets `overrides[month] = 0` with a visual `[Skipped this month]` badge while keeping the recurring rule alive.
+- **P6 & P7: Step-Changes & Multi-Scope Edits**:
+  - 3-way edit scope: "This month only" (override), "From this month onward" (`effectiveRates`), or "All months" (base).
+- **P8: Month-Specific Extra Prepayments**:
+  - `_LoanCard` supports "Add Prepayment for this month" (`extraPayments[monthKey]`) to accelerate payoff without mutating the recurring baseline.
+- **P11 & P12: Read-Only Navigation & Transparent Forecast Breakdown**:
+  - Month navigation is strictly mathematical and read-only (zero writes).
+  - 6-column forecast table: Month, Income, Direct Expenses, Loan EMIs, Total Outflow, Net Balance.
+- **P13 to P18: Single Source of Truth & AI Advisory Guardrails**:
+  - Synchronized calculation across all tabs; clean empty states; AI advisor operates strictly as a read-only explainer.
