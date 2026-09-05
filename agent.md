@@ -1683,5 +1683,21 @@ MoneyMonk features an in-app AI Financial Advisor powered by Google Gemini (`gem
     - Total Monthly EMI debt burden.
     - Itemized breakdown of income streams, expenses, and loans (with ROI % and tenure).
 
+55. AI Advisor Read-Only Awareness Notice & Responsive UI Hardening
+
+- **Explicit User Awareness (Read-Only Scope)**:
+  - The AI Advisor includes a persistent, clear awareness notice in `_MoneyMonkAdvisor`:
+    `"Analysis & Strategy Only: MoneyMonk AI analyzes your income, expenses, and loans to generate recommendations. It does not add, modify, or delete your financial data."`
+  - Prevents user confusion regarding AI autonomous execution vs. deterministic read-only advisory.
+- **Responsive UI Hardening Across Devices**:
+  - **AI Advisor Header**: Replaced rigid single-line row with `Wrap` so title and Free/Paid tier chip never collide or cause RenderFlex overflow on narrow viewports (<400px).
+  - **AI Power Mode Selector**: Added `Flexible` with `TextOverflow.ellipsis` to prevent text truncation bugs on small mobile screens (<360px).
+  - **AI Settings Dialog**: Converted radio tier headings to `Wrap` to prevent chips from pushing beyond modal boundaries.
+  - **Financial Health Scorecard**: Converted the scorecard title and surplus/deficit badge row into a responsive `Wrap` component.
+  - **Money Screen Date/View Wrap**: Enforced `mainAxisSize: MainAxisSize.min` on inner `Row` widgets to preserve proper wrapping behavior.
+- **Institutional Markdown Output Rendering**:
+  - Implemented `_renderFormattedResponse` with header styling (`#`, `##`, `###`), bold word emphasis (`**bold**`), bullet points (`•`), and wrapped in `SelectionArea` for easy copying.
+
+
 
 

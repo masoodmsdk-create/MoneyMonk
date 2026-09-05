@@ -1605,10 +1605,14 @@ class HomeSummaryScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 6,
                   children: [
                     const Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.analytics_outlined, color: moneyMonkNavy, size: 20),
                         SizedBox(width: 8),
@@ -2046,10 +2050,12 @@ User Query: $effectiveQuestion''';
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Row(
+                                  Wrap(
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    spacing: 8,
+                                    runSpacing: 4,
                                     children: [
-                                      Text('Free Tier (Firebase AI / Gemini)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                                      SizedBox(width: 8),
+                                      Text('Free Tier (Firebase AI / Gemini)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
                                       Chip(
                                         label: Text('100% Free', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: moneyMonkIncome)),
                                         backgroundColor: Color(0xFFDCFCE7),
@@ -2099,10 +2105,12 @@ User Query: $effectiveQuestion''';
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Row(
+                                  Wrap(
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    spacing: 8,
+                                    runSpacing: 4,
                                     children: [
-                                      Text('Paid / Google Cloud Tier', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                                      SizedBox(width: 8),
+                                      Text('Paid / Google Cloud Tier', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
                                       Chip(
                                         label: Text('Dedicated', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: moneyMonkNavy)),
                                         backgroundColor: Color(0xFFE0E7FF),
@@ -2232,14 +2240,18 @@ User Query: $effectiveQuestion''';
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Row(
+                const Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.auto_awesome, color: moneyMonkNavy, size: 22),
-                    const SizedBox(width: 8),
-                    const Text('Firebase AI Financial Advisor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                    Icon(Icons.auto_awesome, color: moneyMonkNavy, size: 22),
+                    SizedBox(width: 8),
+                    Text('Firebase AI Financial Advisor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
                   ],
                 ),
                 InkWell(
@@ -2281,6 +2293,36 @@ User Query: $effectiveQuestion''';
                   : 'Powered by Gemini Dedicated Cloud Tier (Private & High Quota)',
               style: const TextStyle(fontSize: 12, color: moneyMonkSecondaryText),
             ),
+            const SizedBox(height: 10),
+
+            // Read-Only Advisor Notice (User Awareness)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: moneyMonkNavyLight,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: moneyMonkNavy.withValues(alpha: 0.15)),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline, size: 16, color: moneyMonkNavy),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Analysis & Strategy Only: MoneyMonk AI analyzes your income, expenses, and loans to generate recommendations. It does not add, modify, or delete your financial data.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: moneyMonkNavy,
+                        fontWeight: FontWeight.w500,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
 
             // AI Analysis Power Selector
@@ -2301,7 +2343,7 @@ User Query: $effectiveQuestion''';
                       },
                       borderRadius: BorderRadius.circular(9),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
                         decoration: BoxDecoration(
                           color: _powerMode == AiPowerMode.turbo ? moneyMonkSurface : Colors.transparent,
                           borderRadius: BorderRadius.circular(9),
@@ -2313,13 +2355,17 @@ User Query: $effectiveQuestion''';
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(Icons.bolt, size: 16, color: _powerMode == AiPowerMode.turbo ? moneyMonkWarning : moneyMonkSecondaryText),
-                            const SizedBox(width: 5),
-                            Text(
-                              'Turbo Power (1s Instant)',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: _powerMode == AiPowerMode.turbo ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                'Turbo Power (1s Instant)',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: _powerMode == AiPowerMode.turbo ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                                ),
                               ),
                             ),
                           ],
@@ -2336,7 +2382,7 @@ User Query: $effectiveQuestion''';
                       },
                       borderRadius: BorderRadius.circular(9),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
                         decoration: BoxDecoration(
                           color: _powerMode == AiPowerMode.deepAudit ? moneyMonkSurface : Colors.transparent,
                           borderRadius: BorderRadius.circular(9),
@@ -2348,13 +2394,17 @@ User Query: $effectiveQuestion''';
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(Icons.psychology, size: 16, color: _powerMode == AiPowerMode.deepAudit ? moneyMonkNavy : moneyMonkSecondaryText),
-                            const SizedBox(width: 5),
-                            Text(
-                              'Deep Reasoning Audit',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: _powerMode == AiPowerMode.deepAudit ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                'Deep Reasoning Audit',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: _powerMode == AiPowerMode.deepAudit ? moneyMonkPrimaryText : moneyMonkSecondaryText,
+                                ),
                               ),
                             ),
                           ],
@@ -2377,6 +2427,7 @@ User Query: $effectiveQuestion''';
             // Quick Question Chips
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(right: 8),
               child: Row(
                 children: [
                   ActionChip(
@@ -2425,6 +2476,8 @@ User Query: $effectiveQuestion''';
                 Expanded(
                   child: TextField(
                     controller: _questionController,
+                    minLines: 1,
+                    maxLines: 3,
                     decoration: const InputDecoration(
                       hintText: 'Ask financial advice, debt tips, or budget rules...',
                     ),
@@ -2483,12 +2536,10 @@ User Query: $effectiveQuestion''';
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: moneyMonkBorder),
               ),
-              child: SelectableText(
-                _answer,
-                style: const TextStyle(
-                  color: moneyMonkPrimaryText,
-                  fontSize: 13,
-                  height: 1.5,
+              child: SelectionArea(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _renderFormattedResponse(_answer),
                 ),
               ),
             ),
@@ -2496,6 +2547,88 @@ User Query: $effectiveQuestion''';
         ),
       ),
     );
+  }
+
+  List<Widget> _renderFormattedResponse(String text) {
+    final lines = text.split('\n');
+    final widgets = <Widget>[];
+
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.isEmpty) {
+        widgets.add(const SizedBox(height: 6));
+        continue;
+      }
+
+      if (line.startsWith('#')) {
+        final headerText = line.replaceFirst(RegExp(r'^#+\s*'), '');
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 4),
+            child: Text(
+              headerText,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: moneyMonkNavy,
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+
+      final isBullet = line.startsWith('- ') || line.startsWith('* ');
+      final cleanLine = isBullet ? line.substring(2).trim() : line;
+
+      final spans = <TextSpan>[];
+      final parts = cleanLine.split('**');
+      for (int i = 0; i < parts.length; i++) {
+        if (parts[i].isEmpty) continue;
+        final isBold = i % 2 == 1;
+        spans.add(
+          TextSpan(
+            text: parts[i],
+            style: TextStyle(
+              fontWeight: isBold ? FontWeight.w700 : FontWeight.w400,
+              color: moneyMonkPrimaryText,
+              fontSize: 13,
+              height: 1.45,
+            ),
+          ),
+        );
+      }
+
+      if (isBullet) {
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('• ', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: moneyMonkNavy)),
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(children: spans),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      } else {
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text.rich(
+              TextSpan(children: spans),
+            ),
+          ),
+        );
+      }
+    }
+
+    return widgets;
   }
 
   static String _formatCurrency(int paise) => NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0).format(paise / 100);
@@ -2607,6 +2740,7 @@ class MoneyScreen extends StatelessWidget {
                     children: [
                       if (!showAllTransactions)
                         Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               onPressed: () => onMonthChanged(DateTime(
@@ -2645,6 +2779,7 @@ class MoneyScreen extends StatelessWidget {
                           ),
                         ),
                       Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
                           FilterChip(
                             label: const Text('Monthly'),
